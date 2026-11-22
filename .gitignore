@@ -1,0 +1,13 @@
+# Compiled binaries & release outputs
+*.exe
+*.zip
+dist/
+
+# Local runtime state & backups
+config/next_config.json
+config/lighting_config.json
+data/
+*.bak
+*.log
+.DS_Store
+Thumbs.db

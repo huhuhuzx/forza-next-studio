@@ -1,0 +1,148 @@
+[
+  {
+    "id": "amian_v014",
+    "name": "阿面面条君 · 竞技模式 V0.14",
+    "author": "阿面面条君",
+    "category": "竞速",
+    "tags": [
+      "抓地临界预警",
+      "握把升档提示",
+      "通道清晰分工"
+    ],
+    "summary": "最新版竞技调校，强化弯中抓地力渐进预警与升档节奏提示，降低背景干扰。",
+    "file": "amian_fh6_racing_v0.14.json",
+    "paramCount": 194
+  },
+  {
+    "id": "amian_v09",
+    "name": "阿面面条君 · 竞技模式 V0.9",
+    "author": "阿面面条君",
+    "category": "竞速",
+    "tags": [
+      "竞技均衡",
+      "清晰分工"
+    ],
+    "summary": "竞技模式 V0.9 调校版本，兼顾引擎机械质感与关键时刻的抓地/抱死解析。",
+    "file": "amian_fh6_racing_v0.9.json",
+    "paramCount": 192
+  },
+  {
+    "id": "amian_v06",
+    "name": "阿面面条君 · 竞技模式 V0.6",
+    "author": "阿面面条君",
+    "category": "竞速",
+    "tags": [
+      "早期竞技版",
+      "偏轻快"
+    ],
+    "summary": "竞技模式 V0.6 版本，适合偏好早期手感的竞速玩家。",
+    "file": "amian_fh6_racing_v0.6.json",
+    "paramCount": 190
+  },
+  {
+    "id": "taoyan_2",
+    "name": "讨厌君 · 地平线6 娱乐久玩版",
+    "author": "讨厌君",
+    "category": "娱乐",
+    "tags": [
+      "长时间不手麻",
+      "甜点克制",
+      "换挡与路感增强"
+    ],
+    "summary": "降低持续引擎轰鸣干扰，甜点区安静克制，重点突出明显打滑、换挡冲击与路面颠簸。",
+    "file": "taoyan_fh6_v2.json",
+    "paramCount": 192
+  },
+  {
+    "id": "kaixin_race1",
+    "name": "开心散仙 · 竞速1（扳机极限范围大）",
+    "author": "开心散仙",
+    "category": "竞速",
+    "tags": [
+      "宽临界余量",
+      "刹车控油细腻"
+    ],
+    "summary": "放大扳机抓地临界区范围，刹车与出弯给油拥有更宽裕的控制窗口。",
+    "file": "kaixin_race1_wide_limit.json",
+    "paramCount": 192
+  },
+  {
+    "id": "kaixin_race2",
+    "name": "开心散仙 · 竞速2（扳机抱死清晰）",
+    "author": "开心散仙",
+    "category": "竞速",
+    "tags": [
+      "抱死分明",
+      "抓地与打滑强区分"
+    ],
+    "summary": "强化轮胎抱死与极限打滑的辨识度，同时保留路面反馈沉浸感。",
+    "file": "kaixin_race2_clear_lock.json",
+    "paramCount": 194
+  },
+  {
+    "id": "kaixin_drift",
+    "name": "开心散仙 · 漂移柔和版",
+    "author": "开心散仙",
+    "category": "漂移",
+    "tags": [
+      "漂移防手麻",
+      "柔和持续反馈"
+    ],
+    "summary": "针对高频横滑漂移场景降低整体持续震量，减少长时间漂移带来的手麻感。",
+    "file": "kaixin_drift_soft.json",
+    "paramCount": 194
+  },
+  {
+    "id": "kaixin_heavy",
+    "name": "开心散仙 · 重反馈爱好者",
+    "author": "开心散仙",
+    "category": "娱乐",
+    "tags": [
+      "重度震感",
+      "全路况拉满"
+    ],
+    "summary": "为喜欢强烈机械冲击与饱满震感的玩家定制的重反馈配置。",
+    "file": "kaixin_heavy_feedback.json",
+    "paramCount": 195
+  },
+  {
+    "id": "kaixin_fun3",
+    "name": "开心散仙 · 娱乐模式3（扳机丰富反馈）",
+    "author": "开心散仙",
+    "category": "娱乐",
+    "tags": [
+      "扳机丰富细节",
+      "街头沉浸"
+    ],
+    "summary": "增强双扳机细节表达，在日常巡航与街头竞速中提供丰富指尖动态。",
+    "file": "kaixin_fun3_rich_trigger.json",
+    "paramCount": 195
+  },
+  {
+    "id": "v7_calibrated",
+    "name": "v7 实测标定精修版",
+    "author": "v7 标定",
+    "category": "均衡",
+    "tags": [
+      "土路0.09修复",
+      "左右立体声",
+      "全场景均衡"
+    ],
+    "summary": "基于 6 份实机录制样本纠偏后的 170 项优化标定，修复土路 0.12 漏震与高转平台期。",
+    "file": "v7_calibrated_default.json",
+    "paramCount": 170
+  },
+  {
+    "id": "v4_official",
+    "name": "v4 官方原版默认",
+    "author": "官方 v4",
+    "category": "官方",
+    "tags": [
+      "官方基线",
+      "原汁原味"
+    ],
+    "summary": "Forza UDP 2.0 Guardrail v4 内部验收包自带原始默认配置。",
+    "file": "v4_official_default.json",
+    "paramCount": 170
+  }
+]
