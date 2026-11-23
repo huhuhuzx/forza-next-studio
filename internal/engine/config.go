@@ -2,7 +2,10 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
+	"math"
 	"os"
+	"path/filepath"
 )
 
 const CurrentSchemaVersion = 2
@@ -155,6 +158,93 @@ func StylePreset(name string) (NextConfig, bool) {
 	}
 }
 
+func sanitizeFloat(v, def, lo, hi float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return def
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func sanitizeEventFeel(e *EventFeel, def EventFeel) {
+	e.Intensity = sanitizeFloat(e.Intensity, def.Intensity, 0.0, 1.6)
+	e.Sharpness = sanitizeFloat(e.Sharpness, def.Sharpness, 0.0, 1.0)
+	e.FreqScale = sanitizeFloat(e.FreqScale, def.FreqScale, 0.65, 1.45)
+}
+
+// Sanitize replaces NaN/Inf values with safe defaults and clamps all config fields to valid ranges.
+func (c *NextConfig) Sanitize() {
+	def := DefaultNextConfig()
+	if c.SchemaVersion < CurrentSchemaVersion {
+		c.SchemaVersion = CurrentSchemaVersion
+	}
+	c.MasterGripGain = sanitizeFloat(c.MasterGripGain, def.MasterGripGain, 0.0, 1.6)
+	c.MasterTriggerGain = sanitizeFloat(c.MasterTriggerGain, def.MasterTriggerGain, 0.0, 1.6)
+	c.DuckingStrength = sanitizeFloat(c.DuckingStrength, def.DuckingStrength, 0.0, 0.85)
+	c.StereoSeparation = sanitizeFloat(c.StereoSeparation, def.StereoSeparation, 0.0, 1.0)
+	c.AntiFatigueClamp = sanitizeFloat(c.AntiFatigueClamp, def.AntiFatigueClamp, 0.4, 1.2)
+
+	sanitizeEventFeel(&c.Events.EngineIdle, def.Events.EngineIdle)
+	sanitizeEventFeel(&c.Events.EngineRev, def.Events.EngineRev)
+	sanitizeEventFeel(&c.Events.GearShift, def.Events.GearShift)
+	sanitizeEventFeel(&c.Events.Redline, def.Events.Redline)
+	sanitizeEventFeel(&c.Events.RoadUndulation, def.Events.RoadUndulation)
+	sanitizeEventFeel(&c.Events.RoadSurface, def.Events.RoadSurface)
+	sanitizeEventFeel(&c.Events.CurbRumble, def.Events.CurbRumble)
+	sanitizeEventFeel(&c.Events.JumpLanding, def.Events.JumpLanding)
+	sanitizeEventFeel(&c.Events.CollisionWall, def.Events.CollisionWall)
+	sanitizeEventFeel(&c.Events.Guardrail, def.Events.Guardrail)
+	sanitizeEventFeel(&c.Events.WaterSplash, def.Events.WaterSplash)
+	sanitizeEventFeel(&c.Events.Understeer, def.Events.Understeer)
+	sanitizeEventFeel(&c.Events.OversteerDrift, def.Events.OversteerDrift)
+	sanitizeEventFeel(&c.Events.BrakingABS, def.Events.BrakingABS)
+
+	c.Trigger.BrakeResistance = sanitizeFloat(c.Trigger.BrakeResistance, def.Trigger.BrakeResistance, 0.0, 1.0)
+	c.Trigger.ThrottleMicroFeel = sanitizeFloat(c.Trigger.ThrottleMicroFeel, def.Trigger.ThrottleMicroFeel, 0.0, 1.0)
+}
+
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	if path == "" {
+		return errors.New("empty file path")
+	}
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	_ = tmp.Sync()
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	_ = os.Chmod(tmpPath, perm)
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
 func LoadNextConfig(path string) NextConfig {
 	def := DefaultNextConfig()
 	b, err := os.ReadFile(path)
@@ -172,14 +262,16 @@ func LoadNextConfig(path string) NextConfig {
 	if err := json.Unmarshal(b, &def); err != nil {
 		return DefaultNextConfig()
 	}
+	def.Sanitize()
 	return def
 }
 
 func SaveNextConfig(path string, cfg NextConfig) error {
+	cfg.Sanitize()
 	cfg.SchemaVersion = CurrentSchemaVersion
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0644)
+	return atomicWriteFile(path, b, 0644)
 }

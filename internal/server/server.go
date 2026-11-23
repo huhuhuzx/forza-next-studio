@@ -2,11 +2,15 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,39 +25,60 @@ type Mode string
 const (
 	ModeEntertainment Mode = "entertainment"
 	ModePro           Mode = "pro"
+
+	maxJSONBodyBytes = 1 << 20 // 1 MiB
 )
 
 // App coordinates UDP routing, Entertainment Next Engine, Pro V4 Manager, HID devices, K6 Telemetry Lighting, and embedded Web UI.
 type App struct {
-	mu              sync.RWMutex
-	mode            Mode
-	webFS           fs.FS
-	dataDir         string
-	writer          *hid.Writer
-	runtime         *engine.Runtime
-	v4              *v4bridge.Manager
-	lights          *lighting.Controller
-	lightCfgPath    string
-	requestShutdown func()
-	devices         []hid.DeviceInfo
-	includeAll      bool
-	deviceMsg       string
-	udpBindErr      string
-	selectedPath    string
+	mu           sync.RWMutex
+	switchMu     sync.Mutex
+	mode         Mode
+	webFS        fs.FS
+	dataDir      string
+	writer       *hid.Writer
+	runtime      *engine.Runtime
+	v4           *v4bridge.Manager
+	lights       *lighting.Controller
+	lightCfgPath string
+	udpBindErr   string
+	udpPort      int
+	shutdownCh   <-chan struct{}
+	onShutdown   func()
+	devices      []hid.DeviceInfo
+	includeAll   bool
+	deviceMsg    string
 }
 
-func NewApp(webFS fs.FS, dataDir string, writer *hid.Writer, rt *engine.Runtime, v4 *v4bridge.Manager, lights *lighting.Controller, lightCfgPath string, udpBindErr string, requestShutdown func()) *App {
+func NewApp(
+	webFS fs.FS,
+	dataDir string,
+	writer *hid.Writer,
+	rt *engine.Runtime,
+	v4 *v4bridge.Manager,
+	lights *lighting.Controller,
+	lightCfgPath string,
+	udpBindErr string,
+	udpPort int,
+	shutdownCh <-chan struct{},
+	onShutdown func(),
+) *App {
+	if udpPort <= 0 {
+		udpPort = 5300
+	}
 	a := &App{
-		mode:            ModeEntertainment,
-		webFS:           webFS,
-		dataDir:         dataDir,
-		writer:          writer,
-		runtime:         rt,
-		v4:              v4,
-		lights:          lights,
-		lightCfgPath:    lightCfgPath,
-		udpBindErr:      udpBindErr,
-		requestShutdown: requestShutdown,
+		mode:         ModeEntertainment,
+		webFS:        webFS,
+		dataDir:      dataDir,
+		writer:       writer,
+		runtime:      rt,
+		v4:           v4,
+		lights:       lights,
+		lightCfgPath: lightCfgPath,
+		udpBindErr:   udpBindErr,
+		udpPort:      udpPort,
+		shutdownCh:   shutdownCh,
+		onShutdown:   onShutdown,
 	}
 	a.RefreshDevices(false)
 	return a
@@ -65,7 +90,19 @@ func (a *App) Mode() Mode {
 	return a.mode
 }
 
-func (a *App) RefreshDevices(includeAll bool) []hid.DeviceInfo {
+func (a *App) includeAllState() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.includeAll
+}
+
+func cloneDevices(src []hid.DeviceInfo) []hid.DeviceInfo {
+	out := make([]hid.DeviceInfo, len(src))
+	copy(out, src)
+	return out
+}
+
+func (a *App) enumerateDevicesSnapshot(includeAll bool) []hid.DeviceInfo {
 	devs := hid.Enumerate33ByteDevices(includeAll)
 	activePath := a.writer.ActivePath()
 	for i := range devs {
@@ -73,17 +110,30 @@ func (a *App) RefreshDevices(includeAll bool) []hid.DeviceInfo {
 			devs[i].Writing = true
 		}
 	}
-	a.mu.Lock()
-	a.includeAll = includeAll
-	a.devices = devs
-	a.mu.Unlock()
 	return devs
 }
 
-func (a *App) SwitchMode(target Mode) error {
+func (a *App) RefreshDevices(includeAll bool) []hid.DeviceInfo {
+	devs := a.enumerateDevicesSnapshot(includeAll)
 	a.mu.Lock()
-	cur := a.mode
+	a.includeAll = includeAll
+	a.devices = devs
+	out := cloneDevices(devs)
 	a.mu.Unlock()
+	return out
+}
+
+func (a *App) RefreshDevicesCurrent() []hid.DeviceInfo {
+	return a.RefreshDevices(a.includeAllState())
+}
+
+func (a *App) SwitchMode(target Mode) error {
+	a.switchMu.Lock()
+	defer a.switchMu.Unlock()
+
+	a.mu.RLock()
+	cur := a.mode
+	a.mu.RUnlock()
 	if target == cur {
 		return nil
 	}
@@ -112,7 +162,7 @@ func (a *App) SwitchMode(target Mode) error {
 	a.deviceMsg = "已切换至娱乐模式（Next 状态引擎）"
 	a.mu.Unlock()
 	a.runtime.SetActive(true)
-	a.RefreshDevices(a.includeAll)
+	a.RefreshDevicesCurrent()
 	return nil
 }
 
@@ -163,7 +213,80 @@ func (a *App) Handler() http.Handler {
 		staticSrv.ServeHTTP(w, r)
 	})
 
-	return mux
+	return loopbackGuardMiddleware(mux)
+}
+
+func isLoopbackHost(hostport string) bool {
+	h := strings.TrimSpace(hostport)
+	if h == "" {
+		return false
+	}
+	host := h
+	if parsedHost, _, err := net.SplitHostPort(h); err == nil {
+		host = parsedHost
+	} else {
+		host = strings.TrimPrefix(strings.TrimSuffix(h, "]"), "[")
+	}
+	host = strings.ToLower(host)
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func isLoopbackURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	return isLoopbackHost(u.Host)
+}
+
+func loopbackGuardMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodDelete, http.MethodPut, http.MethodPatch:
+			if !isLoopbackHost(r.Host) {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "仅允许本机回环 Host 访问变更接口"})
+				return
+			}
+			if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+				if !isLoopbackURL(origin) {
+					writeJSON(w, http.StatusForbidden, map[string]any{"error": "拒绝跨源变更请求 (Origin)"})
+					return
+				}
+			} else if referer := strings.TrimSpace(r.Header.Get("Referer")); referer != "" {
+				if !isLoopbackURL(referer) {
+					writeJSON(w, http.StatusForbidden, map[string]any{"error": "拒绝跨源变更请求 (Referer)"})
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	return json.NewDecoder(r.Body).Decode(dst)
+}
+
+func readBodyLimited(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	return io.ReadAll(r.Body)
+}
+
+func writeBodyError(w http.ResponseWriter, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "请求体超过大小限制"})
+		return
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 }
 
 func (a *App) handleShutdown(w http.ResponseWriter, r *http.Request) {
@@ -175,10 +298,10 @@ func (a *App) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	if a.requestShutdown != nil {
+	if a.onShutdown != nil {
 		go func() {
-			time.Sleep(120 * time.Millisecond)
-			a.requestShutdown()
+			time.Sleep(50 * time.Millisecond)
+			a.onShutdown()
 		}()
 	}
 }
@@ -186,10 +309,11 @@ func (a *App) handleShutdown(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 	a.mu.RLock()
 	mode := a.mode
-	devs := a.devices
+	devs := cloneDevices(a.devices)
 	devMsg := a.deviceMsg
 	udpErr := a.udpBindErr
 	includeAll := a.includeAll
+	udpPort := a.udpPort
 	a.mu.RUnlock()
 
 	written, fail, lastErr, open, activeDev := a.writer.Stats()
@@ -201,7 +325,7 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"mode":           mode,
 		"dataDir":        a.dataDir,
-		"udpPort":        5300,
+		"udpPort":        udpPort,
 		"udpBindError":   udpErr,
 		"deviceMessage":  devMsg,
 		"includeAllHid":  includeAll,
@@ -231,8 +355,8 @@ func (a *App) handleMode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Mode Mode `json:"mode"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	if err := decodeJSON(w, r, maxJSONBodyBytes, &req); err != nil {
+		writeBodyError(w, err)
 		return
 	}
 	if req.Mode != ModeEntertainment && req.Mode != ModePro {
@@ -248,7 +372,14 @@ func (a *App) handleMode(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleDevices(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		devs := a.RefreshDevices(r.URL.Query().Get("all") == "1")
+		includeAll := a.includeAllState()
+		switch r.URL.Query().Get("all") {
+		case "1", "true":
+			includeAll = true
+		case "0", "false":
+			includeAll = false
+		}
+		devs := a.enumerateDevicesSnapshot(includeAll)
 		writeJSON(w, 200, map[string]any{"devices": devs})
 		return
 	}
@@ -261,8 +392,8 @@ func (a *App) handleDevices(w http.ResponseWriter, r *http.Request) {
 		ID         int    `json:"id"`
 		IncludeAll bool   `json:"includeAll"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	if err := decodeJSON(w, r, maxJSONBodyBytes, &req); err != nil {
+		writeBodyError(w, err)
 		return
 	}
 
@@ -271,25 +402,34 @@ func (a *App) handleDevices(w http.ResponseWriter, r *http.Request) {
 		devs := a.RefreshDevices(req.IncludeAll)
 		writeJSON(w, 200, map[string]any{"ok": true, "devices": devs})
 	case "close":
+		a.switchMu.Lock()
 		a.writer.Close()
 		a.mu.Lock()
 		a.deviceMsg = "已停止手柄硬件输出"
 		a.mu.Unlock()
-		devs := a.RefreshDevices(a.includeAll)
+		a.switchMu.Unlock()
+		devs := a.RefreshDevicesCurrent()
 		writeJSON(w, 200, map[string]any{"ok": true, "writing": false, "devices": devs})
 	case "open":
+		a.switchMu.Lock()
+		defer a.switchMu.Unlock()
+
 		if a.Mode() != ModeEntertainment {
 			writeJSON(w, 400, map[string]any{"error": "当前为专业模式，请通过 V4 设备栏开启"})
 			return
 		}
 		a.mu.RLock()
-		devs := a.devices
+		var chosen hid.DeviceInfo
+		validID := req.ID >= 0 && req.ID < len(a.devices)
+		if validID {
+			chosen = a.devices[req.ID]
+		}
 		a.mu.RUnlock()
-		if req.ID < 0 || req.ID >= len(devs) {
+		if !validID {
 			writeJSON(w, 400, map[string]any{"error": "无效的设备编号，请刷新手柄列表"})
 			return
 		}
-		if err := a.writer.Open(devs[req.ID]); err != nil {
+		if err := a.writer.Open(chosen); err != nil {
 			a.mu.Lock()
 			a.deviceMsg = err.Error()
 			a.mu.Unlock()
@@ -297,10 +437,9 @@ func (a *App) handleDevices(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.mu.Lock()
-		a.selectedPath = devs[req.ID].Path
-		a.deviceMsg = fmt.Sprintf("已连接并开启触觉输出：%s (%s:%s)", devs[req.ID].Product, devs[req.ID].VID, devs[req.ID].PID)
+		a.deviceMsg = fmt.Sprintf("已连接并开启触觉输出：%s (%s:%s)", chosen.Product, chosen.VID, chosen.PID)
 		a.mu.Unlock()
-		devs = a.RefreshDevices(a.includeAll)
+		devs := a.RefreshDevicesCurrent()
 		writeJSON(w, 200, map[string]any{"ok": true, "writing": true, "devices": devs})
 	default:
 		writeJSON(w, 400, map[string]any{"error": "未知操作"})
@@ -316,11 +455,12 @@ func (a *App) handleNextConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var cfg engine.NextConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	cfg := a.runtime.Config()
+	if err := decodeJSON(w, r, maxJSONBodyBytes, &cfg); err != nil {
+		writeBodyError(w, err)
 		return
 	}
+	cfg.Sanitize()
 	if err := a.runtime.UpdateConfig(cfg); err != nil {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
@@ -336,8 +476,8 @@ func (a *App) handleNextPreset(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	if err := decodeJSON(w, r, maxJSONBodyBytes, &req); err != nil {
+		writeBodyError(w, err)
 		return
 	}
 	cfg, ok := engine.StylePreset(req.Name)
@@ -345,8 +485,12 @@ func (a *App) handleNextPreset(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"error": "未找到风格配方"})
 		return
 	}
-	_ = a.runtime.UpdateConfig(cfg)
-	writeJSON(w, 200, map[string]any{"ok": true, "config": cfg})
+	cfg.Sanitize()
+	if err := a.runtime.UpdateConfig(cfg); err != nil {
+		writeJSON(w, 500, map[string]any{"error": "保存风格配方失败: " + err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "config": a.runtime.Config()})
 }
 
 func (a *App) handleNextTest(w http.ResponseWriter, r *http.Request) {
@@ -357,8 +501,12 @@ func (a *App) handleNextTest(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		EventID string `json:"eventId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	if err := decodeJSON(w, r, maxJSONBodyBytes, &req); err != nil {
+		writeBodyError(w, err)
+		return
+	}
+	if !engine.IsValidTestEventID(req.EventID) {
+		writeJSON(w, 400, map[string]any{"error": "无效的试震事件 ID"})
 		return
 	}
 	a.runtime.TriggerTest(req.EventID)
@@ -381,20 +529,32 @@ func (a *App) handleNextCar(w http.ResponseWriter, r *http.Request) {
 		EngineBedScale      float64 `json:"engineBedScale"`
 		RedlineRatio        float64 `json:"redlineRatio"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	if err := decodeJSON(w, r, maxJSONBodyBytes, &req); err != nil {
+		writeBodyError(w, err)
 		return
 	}
 	var car engine.CarPersonality
 	switch req.Action {
 	case "override":
+		if a.runtime.Profiler().Active().CarOrdinal == 0 {
+			writeJSON(w, 400, map[string]any{"error": "当前尚未接入游戏车辆，请进入游戏驾驶后再保存专属调校"})
+			return
+		}
 		car = a.runtime.Profiler().SaveCurrentOverride(
 			req.CustomName, req.EngineRoundness, req.EngineBurble,
 			req.SuspensionStiffness, req.ShiftCrispness, req.EngineBedScale, req.RedlineRatio,
 		)
 	case "reset":
+		if a.runtime.Profiler().Active().CarOrdinal == 0 {
+			writeJSON(w, 400, map[string]any{"error": "当前尚未接入游戏车辆，无法恢复自动匹配"})
+			return
+		}
 		car = a.runtime.Profiler().ResetCurrentOverride()
 	case "previewArchetype":
+		if !engine.IsValidArchetypeID(req.ArchetypeID) {
+			writeJSON(w, 400, map[string]any{"error": "无效的车型性格 ID"})
+			return
+		}
 		car = a.runtime.Profiler().ApplyDemoArchetype(req.ArchetypeID)
 	default:
 		writeJSON(w, 400, map[string]any{"error": "未知车辆操作"})
@@ -412,12 +572,20 @@ func (a *App) handleGarage(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			CarOrdinal int32 `json:"carOrdinal"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, 400, map[string]any{"error": err.Error()})
+		if err := decodeJSON(w, r, maxJSONBodyBytes, &req); err != nil {
+			writeBodyError(w, err)
+			return
+		}
+		if req.CarOrdinal == 0 {
+			writeJSON(w, 400, map[string]any{"error": "无效的车辆编号 (carOrdinal=0)"})
 			return
 		}
 		a.runtime.Profiler().DeleteGarageEntry(req.CarOrdinal)
-		writeJSON(w, 200, map[string]any{"ok": true, "garage": a.runtime.Profiler().ListGarage()})
+		writeJSON(w, 200, map[string]any{
+			"ok":     true,
+			"garage": a.runtime.Profiler().ListGarage(),
+			"car":    a.runtime.Profiler().Active(),
+		})
 		return
 	}
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -438,8 +606,8 @@ func (a *App) handleProApplyPreset(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	if err := decodeJSON(w, r, maxJSONBodyBytes, &req); err != nil {
+		writeBodyError(w, err)
 		return
 	}
 	p, err := a.v4.ApplyPreset(req.ID)
@@ -455,9 +623,9 @@ func (a *App) handleProImport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 128*1024))
+	raw, err := readBodyLimited(w, r, maxJSONBodyBytes)
 	if err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+		writeBodyError(w, err)
 		return
 	}
 	if err := a.v4.ApplyRawJSON(raw); err != nil {
@@ -489,7 +657,15 @@ func (a *App) handleProSettings(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(b)
 		return
 	}
-	raw, _ := io.ReadAll(io.LimitReader(r.Body, 128*1024))
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw, err := readBodyLimited(w, r, maxJSONBodyBytes)
+	if err != nil {
+		writeBodyError(w, err)
+		return
+	}
 	b, code, err := a.v4.PostV4JSON("/api/settings", raw)
 	if err != nil {
 		writeJSON(w, 502, map[string]any{"error": err.Error()})
@@ -510,7 +686,15 @@ func (a *App) handleProHello(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleProDevice(w http.ResponseWriter, r *http.Request) {
-	raw, _ := io.ReadAll(io.LimitReader(r.Body, 8*1024))
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	raw, err := readBodyLimited(w, r, 8*1024)
+	if err != nil {
+		writeBodyError(w, err)
+		return
+	}
 	b, code, err := a.v4.DeviceCommand(raw)
 	if err != nil {
 		writeJSON(w, 502, map[string]any{"error": err.Error()})
@@ -533,7 +717,15 @@ func (a *App) handleProRecording(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(b)
 		return
 	}
-	raw, _ := io.ReadAll(io.LimitReader(r.Body, 4*1024))
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw, err := readBodyLimited(w, r, 4*1024)
+	if err != nil {
+		writeBodyError(w, err)
+		return
+	}
 	b, code, err := a.v4.PostV4JSON("/api/recording", raw)
 	if err != nil {
 		writeJSON(w, 502, map[string]any{"error": err.Error()})
@@ -559,14 +751,17 @@ func (a *App) handleLightingConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var cfg lighting.LightConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	cfg := a.lights.Config()
+	if err := decodeJSON(w, r, maxJSONBodyBytes, &cfg); err != nil {
+		writeBodyError(w, err)
 		return
 	}
 	cfg.Sanitize()
 	a.lights.SetConfig(cfg)
-	_ = lighting.SaveLightConfig(a.lightCfgPath, cfg)
+	if err := lighting.SaveLightConfig(a.lightCfgPath, cfg); err != nil {
+		writeJSON(w, 500, map[string]any{"error": "保存灯效配置失败: " + err.Error()})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true, "lighting": a.lights.Snapshot()})
 }
 
@@ -578,8 +773,12 @@ func (a *App) handleLightingTest(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Mode string `json:"mode"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	if err := decodeJSON(w, r, maxJSONBodyBytes, &req); err != nil {
+		writeBodyError(w, err)
+		return
+	}
+	if !lighting.IsValidTestMode(req.Mode) {
+		writeJSON(w, 400, map[string]any{"error": "无效的灯效测试模式"})
 		return
 	}
 	a.lights.TriggerTest(req.Mode)
@@ -612,6 +811,8 @@ func (a *App) handleSSE(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-a.shutdownCh:
+			return
 		case <-ticker.C:
 			written, fail, lastErr, open, _ := a.writer.Stats()
 			payload := map[string]any{
@@ -625,10 +826,13 @@ func (a *App) handleSSE(w http.ResponseWriter, r *http.Request) {
 				"lighting":      a.lights.Snapshot(),
 			}
 			b, err := json.Marshal(payload)
-			if err == nil {
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
-				flusher.Flush()
+			if err != nil {
+				continue
 			}
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+				return
+			}
+			flusher.Flush()
 		}
 	}
 }

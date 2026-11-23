@@ -53,8 +53,9 @@ type Runtime struct {
 	conflictTot  uint64
 	latestSnap   LiveSnapshot
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 func NewRuntime(cfgPath, garagePath string, writer *hid.Writer) *Runtime {
@@ -75,13 +76,22 @@ func (r *Runtime) Start() {
 }
 
 func (r *Runtime) Stop() {
-	close(r.stopCh)
+	r.stopOnce.Do(func() {
+		close(r.stopCh)
+	})
 	r.wg.Wait()
 }
 
 func (r *Runtime) SetActive(on bool) {
 	r.mu.Lock()
 	r.active = on
+	if !on {
+		r.synth.Reset()
+		r.latestSnap.EngineActive = false
+		r.latestSnap.ImpactActive = false
+		r.latestSnap.Events = nil
+		r.latestSnap.TrigRoute = -1
+	}
 	r.mu.Unlock()
 }
 
@@ -98,6 +108,7 @@ func (r *Runtime) Config() NextConfig {
 }
 
 func (r *Runtime) UpdateConfig(cfg NextConfig) error {
+	cfg.Sanitize()
 	r.mu.Lock()
 	r.cfg = cfg
 	r.mu.Unlock()
@@ -127,7 +138,9 @@ func (r *Runtime) IngestPacket(pkt telemetry.Packet) {
 	r.packetsTotal++
 	cfg := r.cfg
 	car := r.profiler.Observe(pkt, cfg.AutoCarMatching, cfg.AutoRedlineLearn)
-	r.synth.StepPacket(pkt, cfg, car, dt)
+	if r.active {
+		r.synth.StepPacket(pkt, cfg, car, dt)
+	}
 	r.mu.Unlock()
 }
 

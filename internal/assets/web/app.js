@@ -9,10 +9,10 @@ const CLASS_LABELS = { 0: "D", 1: "C", 2: "B", 3: "A", 4: "S1", 5: "S2", 6: "X" 
 const EVENT_GROUPS = [
   {
     title: "7 大引擎家族与动力传控",
-    sub: "横跨 16–156 Hz 宽频段与 36%–165% 振幅差：美式 V8 重低音突突 / V12 丝绸高转 / 万转转子高频蜂鸣 / 涡轮暴涨 / 轻盈小自吸 / 纯电静音",
+    sub: "横跨 28–156 Hz 宽频段与 36%–135% 振幅差：美式 V8（30–72Hz · 135%）重低音突突 / V12 丝绸高转 / 万转转子高频蜂鸣 / 涡轮暴涨 / 轻盈小自吸 / 纯电静音",
     items: [
-      { key: "engineIdle", name: "怠速呼吸与突突质感", desc: "美式 V8 17Hz 猛烈凸轮轴突突脉动，小排量轻柔微震，V12 丝滑轻鸣，纯电完全静谧。" },
-      { key: "engineRev", name: "引擎拉转与涡轮爆发", desc: "按 7 大引擎家族独立塑形频率、谐波与振幅（V8 比纯电强 5 倍、转子频率高 3 倍）。" },
+      { key: "engineIdle", name: "怠速呼吸与突突质感", desc: "美式 V8 ~15.6Hz 猛烈凸轮轴突突脉动（30–72Hz · 135%），小排量轻柔微震，V12 丝滑轻鸣，纯电完全静谧。" },
+      { key: "engineRev", name: "引擎拉转与涡轮爆发", desc: "按 7 大引擎家族独立塑形频率、谐波与振幅（V8 比纯电强近 4 倍、转子频率高 3 倍）。" },
       { key: "gearShift", name: "升降挡机械顿挫", desc: "机械咬合瞬态撞击 + 低频推背余震，同步驱动右扳机换挡冲击。" },
       { key: "redline", name: "自学习红线与断油提醒", desc: "自动捕获真实峰值功率与断油转速，临近红线高频间歇爆震提醒。" },
     ],
@@ -30,9 +30,9 @@ const EVENT_GROUPS = [
     title: "高低速 360° 撞击、定向护栏、飞坡与涉水",
     sub: "3 km/h 低速碰擦即刻响应 · 左右侧撞与护栏 100% vs 0% 极致单侧隔离（静音对侧握把）",
     items: [
-      { key: "collisionWall", name: "高低速 360° 全向碰撞与撞碎障碍物", desc: "3–80km/h 低速碰擦与高速重撞双层捕获；左右侧撞击纯单侧 140ms 静音对侧，左右立判。" },
+      { key: "collisionWall", name: "高低速 360° 全向碰撞与撞碎障碍物", desc: "3–80km/h 低速碰擦与高速重撞双层捕获；左右侧撞击纯单侧 125ms 静音对侧，左右立判。" },
       { key: "guardrail", name: "左右护栏三特征定向金属刮擦", desc: "物理墙面摩擦减速 + 超抓地法向力 + 方向性蹭墙识别，仅刮擦侧猛烈金属磨削、对侧纯静。" },
-      { key: "jumpLanding", name: "大小飞坡两段式落地冲击", desc: "捕捉 ≥50ms 小中大飞坡，合成 24ms 脆响触地 + 低频回弹余震，按左右压缩加权。" },
+      { key: "jumpLanding", name: "大小飞坡两段式落地冲击", desc: "捕捉 ≥35ms 小中大飞坡，合成 20ms 脆响触地 + 低频回弹余震，按左右压缩加权。" },
       { key: "waterSplash", name: "入水飞溅冲击与涉水波浪阻力", desc: "入水瞬间定向强劲水花冲击，涉水行驶中持续慢频波浪起伏阻力。" },
     ],
   },
@@ -42,15 +42,19 @@ const EVENT_GROUPS = [
     items: [
       { key: "understeer", name: "推头 · FL/FR 前轮独立搓地", desc: "左前轮推头→左握把+左扳机，右前轮推头→右握把+右/左扳机，清晰指示哪一侧前轮突破极限。" },
       { key: "oversteerDrift", name: "甩尾 / 漂移 / 起步烧胎 · RL/RR 独立横扫", desc: "左/右后轮载荷滑移直驱对应握把，油门甩尾→右扳机、手刹/刹车甩尾→左扳机、四轮漂移→双扳机。" },
-      { key: "brakingAbs", name: "重刹 ABS 脉动与轮胎抱死", desc: "急刹防抱死在左扳机输出 14.5Hz 清晰液压脉动并按左右胎滑移加权，彻底抱死切尖锐抖动。" },
+      { key: "brakingAbs", name: "重刹 ABS 脉动与轮胎抱死", desc: "急刹防抱死在左扳机输出 10Hz 清晰液压脉动并按左右胎滑移加权，彻底抱死切尖锐抖动。" },
     ],
   },
 ];
 
 const state = {
   mode: "entertainment",
+  udpPort: 5300,
+  switchingMode: false,
+  exiting: false,
   nextConfig: null,
   activeCar: null,
+  redlineEdited: false,
   archetypes: [],
   garage: [],
   devices: [],
@@ -62,7 +66,11 @@ const state = {
   proLiveStatus: null,
   proSettings: null,
   proRec: null,
+  mainSSE: null,
   proSSE: null,
+  proRecTimer: 0,
+  proSSERetryTimer: 0,
+  rafId: 0,
   saveTimer: 0,
   ringN: 320,
   ringGL: new Uint8Array(320).fill(128),
@@ -70,7 +78,7 @@ const state = {
   ringT: new Uint8Array(320).fill(128),
   ringPos: 0,
   latestSnap: null,
-  lastImpactAt: 0,
+  lastImpactAt: -Infinity,
   lastImpactAngle: 0,
   lastImpactLabel: "",
   lighting: null,
@@ -97,11 +105,15 @@ async function api(url, opts) {
 // ==================== INITIALIZATION ====================
 
 async function loadInitialState() {
+  if (state.exiting) return;
   try {
     const s = await api("/api/state");
+    if (state.exiting) return;
     state.mode = s.mode;
+    state.udpPort = s.udpPort || 5300;
     state.nextConfig = s.nextConfig;
     state.activeCar = s.activeCar;
+    lastCarOrdinalSeen = s.activeCar?.carOrdinal || 0;
     state.archetypes = s.archetypes || [];
     state.garage = s.garage || [];
     state.devices = s.devices || [];
@@ -119,10 +131,10 @@ async function loadInitialState() {
     if (s.udpBindError) {
       $("alert-bar").hidden = false;
       $("alert-bar").textContent = "⚠ " + s.udpBindError;
-      setPill("pill-udp", "bad", "UDP 5300 被占用");
+      setPill("pill-udp", "bad", `UDP ${state.udpPort} 被占用`);
     } else {
       $("alert-bar").hidden = true;
-      setPill("pill-udp", "ok", "UDP 5300 就绪");
+      setPill("pill-udp", "ok", `UDP ${state.udpPort} 就绪`);
     }
 
     $("ent-dev-all").checked = !!s.includeAllHid;
@@ -133,6 +145,7 @@ async function loadInitialState() {
     renderGarage();
     updateCarCard(state.activeCar, true);
     renderProPresets();
+    updateProDiagnosticsLink();
     if (state.mode === "pro") {
       if (state.proHello) applyProHello(state.proHello);
       if (state.proLiveStatus) applyProLiveStatus(state.proLiveStatus);
@@ -163,7 +176,10 @@ function renderModeUI() {
 }
 
 async function switchMode(target) {
-  if (target === state.mode) return;
+  if (state.exiting || state.switchingMode || target === state.mode) return;
+  state.switchingMode = true;
+  $("btn-mode-ent").disabled = true;
+  $("btn-mode-pro").disabled = true;
   toast(target === "pro" ? "正在释放手柄句柄并拉起 V4 原版引擎..." : "正在停止 V4 并切换回 Next 娱乐引擎...");
   try {
     await api("/api/mode", {
@@ -179,6 +195,10 @@ async function switchMode(target) {
     toast(target === "pro" ? "已切换至专业模式（V4 原版引擎），请点击「开启 V4 反馈」" : "已切换至娱乐模式（Next 状态引擎）");
   } catch (e) {
     toast("模式切换失败：" + e.message, true);
+  } finally {
+    state.switchingMode = false;
+    $("btn-mode-ent").disabled = false;
+    $("btn-mode-pro").disabled = false;
   }
 }
 
@@ -315,6 +335,8 @@ document.addEventListener("click", async (e) => {
 
 document.querySelectorAll(".style-btn").forEach((btn) => {
   btn.onclick = async () => {
+    clearTimeout(state.saveTimer);
+    state.saveTimer = 0;
     try {
       const r = await api("/api/next/preset", {
         method: "POST",
@@ -329,6 +351,10 @@ document.querySelectorAll(".style-btn").forEach((btn) => {
 });
 
 $("next-export").onclick = () => {
+  if (!state.nextConfig) {
+    toast("配置尚未加载完成", true);
+    return;
+  }
   const blob = new Blob([JSON.stringify(state.nextConfig, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -340,6 +366,8 @@ $("next-import-btn").onclick = () => $("next-import-file").click();
 $("next-import-file").onchange = async (e) => {
   const f = e.target.files[0];
   if (!f) return;
+  clearTimeout(state.saveTimer);
+  state.saveTimer = 0;
   try {
     const obj = JSON.parse(await f.text());
     if (!obj.events) throw new Error("不是有效的 ForzaNext 娱乐模式配置");
@@ -475,6 +503,11 @@ function renderNextConfigControls() {
 
 // ==================== CAR PERSONALITY & GARAGE ====================
 
+function formatPctHalf(ratio) {
+  const pct = Math.round((ratio || 0.925) * 200) / 2;
+  return Number.isInteger(pct) ? `${pct}%` : `${pct.toFixed(1)}%`;
+}
+
 function updateCarCard(car, syncSliders = false) {
   if (!car) return;
   $("hud-car-label").textContent = car.customName || car.label || "通用均衡";
@@ -489,25 +522,35 @@ function updateCarCard(car, syncSliders = false) {
   $("cm-boost").textContent = car.peakBoostPsi > 0.5 ? `${car.peakBoostPsi.toFixed(1)} psi` : "自然吸气 / 待测";
   $("cm-pwr").textContent = car.peakPowerKw > 1 ? `${car.peakPowerKw.toFixed(0)} kW / ${car.peakTorqueNm.toFixed(0)} Nm` : "待测";
 
-  const rlPct = Math.round((car.redlineRatio || 0.88) * 100);
-  $("cm-rl-val").textContent = rlPct + "%";
-  $("hud-redline-tag").textContent = (car.redlineLearned ? "自学习红线 " : "预估红线 ") + rlPct + "%";
-  $("hud-redline-mark").style.left = Math.min(98, Math.max(70, rlPct)) + "%";
+  const rlRatio = car.redlineRatio || 0.925;
+  const rlPct = Math.round(rlRatio * 200) / 2;
+  const rlText = formatPctHalf(rlRatio);
+  $("cm-rl-val").textContent = car.isElectric ? "纯电" : rlText;
+  $("hud-redline-tag").textContent = car.isElectric
+    ? "纯电无红线"
+    : (car.redlineLearned ? "自学习红线 " : "预估红线 ") + rlText;
+  $("hud-redline-mark").style.left = Math.min(98.5, Math.max(70, rlPct)) + "%";
+  $("hud-redline-mark").hidden = !!car.isElectric;
   $("cm-rl-bar").style.width = Math.round(Math.max(12, (car.redlineConfidence || 0) * 100)) + "%";
   $("cm-rl-status").textContent = car.isElectric ? "纯电车型无需红线" :
-    car.redlineLearned ? `已锁定 (峰值功率 ${Math.round(car.peakPowerRpm || 0)} rpm · 断油 ${Math.round(car.learnedLimiterRpm || 0)} rpm)` :
-    car.peakPowerRpm > 0 ? `学习中 (已测功率峰 ${Math.round(car.peakPowerRpm)} rpm)` : "等待全油门加速学习";
+    car.redlineLearned
+      ? (car.peakPowerRpm > 0 || car.learnedLimiterRpm > 0
+          ? `已锁定 (峰值功率 ${Math.round(car.peakPowerRpm || 0)} rpm · 断油 ${Math.round(car.learnedLimiterRpm || 0)} rpm)`
+          : `已手动锁定 (${rlText})`)
+      : car.peakPowerRpm > 0 ? `学习中 (已测功率峰 ${Math.round(car.peakPowerRpm)} rpm)` : "等待全油门加速学习";
 
   $("car-override-badge").textContent = car.userOverride ? "当前：个人专属调校" : "当前：自动动态适配";
 
   if (syncSliders) {
+    state.redlineEdited = false;
     $("ov-name").value = car.customName || "";
     setOvSlider("ov-round", Math.round((car.engineRoundness ?? 0.6) * 100));
     setOvSlider("ov-burble", Math.round((car.engineBurble ?? 0.3) * 100));
     setOvSlider("ov-stiff", Math.round((car.suspensionStiffness ?? 0.55) * 100));
     setOvSlider("ov-shift", Math.round((car.shiftCrispness ?? 0.72) * 100));
     setOvSlider("ov-bed", Math.round((car.engineBedScale ?? 1.0) * 100));
-    setOvSlider("ov-rl", rlPct);
+    $("ov-rl").value = String(rlPct);
+    $("ov-rl-v").textContent = rlText;
   }
 
   document.querySelectorAll(".arch-card").forEach((el) => {
@@ -516,9 +559,13 @@ function updateCarCard(car, syncSliders = false) {
 }
 
 function setOvSlider(id, val) { $(id).value = String(val); $(id + "-v").textContent = val + "%"; }
-["ov-round", "ov-burble", "ov-stiff", "ov-shift", "ov-bed", "ov-rl"].forEach((id) => {
+["ov-round", "ov-burble", "ov-stiff", "ov-shift", "ov-bed"].forEach((id) => {
   $(id).oninput = () => { $(id + "-v").textContent = $(id).value + "%"; };
 });
+$("ov-rl").oninput = () => {
+  state.redlineEdited = true;
+  $("ov-rl-v").textContent = formatPctHalf(Number($("ov-rl").value) / 100);
+};
 
 $("ov-save").onclick = async () => {
   try {
@@ -533,7 +580,7 @@ $("ov-save").onclick = async () => {
         suspensionStiffness: Number($("ov-stiff").value) / 100,
         shiftCrispness: Number($("ov-shift").value) / 100,
         engineBedScale: Number($("ov-bed").value) / 100,
-        redlineRatio: Number($("ov-rl").value) / 100,
+        redlineRatio: state.redlineEdited ? Number($("ov-rl").value) / 100 : 0,
       }),
     });
     state.activeCar = r.car;
@@ -558,6 +605,16 @@ $("ov-reset").onclick = async () => {
     toast("已恢复自动物理画像匹配");
   } catch (e) { toast(e.message, true); }
 };
+
+async function refreshGarageList() {
+  if (state.exiting) return;
+  try {
+    const r = await api("/api/next/garage");
+    if (state.exiting) return;
+    state.garage = r.garage || [];
+    renderGarage();
+  } catch { /* ignore */ }
+}
 
 function renderArchetypes() {
   const host = $("archetype-grid");
@@ -600,22 +657,32 @@ function renderGarage() {
   }
   host.innerHTML = "";
   state.garage.forEach((g) => {
+    const isEv = g.cylinders === 0;
+    const rlPart = isEv ? "" : ` · 红线 ${formatPctHalf(g.redlineRatio || 0.925)}`;
     const row = document.createElement("div");
     row.className = "garage-item";
     row.innerHTML = `<div>
       <strong>${esc(g.customName || `Car #${g.carOrdinal}`)}</strong>
-      <div class="muted mono">#${g.carOrdinal} · ${g.cylinders === 0 ? "EV" : g.cylinders + "缸"} · PI ${g.carPi} · 红线 ${Math.round((g.redlineRatio || 0.88) * 100)}% ${g.userOverride ? "· 专属调校" : ""}</div>
+      <div class="muted mono">#${g.carOrdinal} · ${isEv ? "EV" : g.cylinders + "缸"} · PI ${g.carPi}${rlPart} ${g.userOverride ? "· 专属调校" : ""}</div>
     </div>
     <button class="btn sm danger">删除</button>`;
     row.querySelector("button").onclick = async () => {
-      const r = await api("/api/next/garage", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ carOrdinal: g.carOrdinal }),
-      });
-      state.garage = r.garage || [];
-      renderGarage();
-      toast(`已移除 Car #${g.carOrdinal}`);
+      try {
+        const r = await api("/api/next/garage", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ carOrdinal: g.carOrdinal }),
+        });
+        state.garage = r.garage || [];
+        if (r.car) {
+          state.activeCar = r.car;
+          updateCarCard(r.car, r.car.carOrdinal === g.carOrdinal);
+        }
+        renderGarage();
+        toast(`已移除 Car #${g.carOrdinal}`);
+      } catch (e) {
+        toast("删除车辆失败：" + e.message, true);
+      }
     };
     host.appendChild(row);
   });
@@ -696,12 +763,23 @@ function applyProHello(m) {
   }
 }
 
+function updateProDiagnosticsLink() {
+  const link = $("pro-diag-link");
+  if (!link) return;
+  if (state.proStatus?.httpBase) {
+    link.href = `${state.proStatus.httpBase}/diagnostics.html`;
+  } else {
+    link.href = "/v4/diagnostics.html";
+  }
+}
+
 function applyProLiveStatus(m) {
   if (!m) return;
   state.proLiveStatus = m;
+  const writing = !!(m.writing ?? state.proHello?.writing);
   $("pro-dev-stats").textContent = `V4 已发 ${(m.written || 0).toLocaleString()} 帧${m.writeFailures ? ` · 异常 ${m.writeFailures}` : ""}`;
   if (state.mode === "pro") {
-    setPill("pill-hid", m.writing ? (m.writeFailures > 0 ? "warn" : "ok") : "", m.writing ? "V4 输出中" : "V4 未开启");
+    setPill("pill-hid", writing ? (m.writeFailures > 0 ? "warn" : "ok") : "", writing ? "V4 输出中" : "V4 未开启");
   }
 }
 
@@ -768,32 +846,79 @@ $("pro-export-btn").onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 
+function clearProRecTimer() {
+  if (state.proRecTimer) {
+    clearTimeout(state.proRecTimer);
+    state.proRecTimer = 0;
+  }
+}
+
 function connectProStream() {
   disconnectProStream();
+  if (state.exiting || state.mode !== "pro") return;
   const es = new EventSource("/api/pro/events");
   state.proSSE = es;
   es.onmessage = (e) => {
+    if (state.exiting || state.mode !== "pro") return;
     let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.type === "hello") applyProHello(m);
     if (m.type === "status") applyProLiveStatus(m);
+  };
+  es.onerror = () => {
+    if (state.exiting || state.mode !== "pro") {
+      disconnectProStream();
+      return;
+    }
+    if (es.readyState === EventSource.CLOSED) {
+      if (state.proSSE === es) state.proSSE = null;
+      setPill("pill-hid", "warn", "V4 重连中");
+      if (!state.proSSERetryTimer) {
+        state.proSSERetryTimer = setTimeout(() => {
+          state.proSSERetryTimer = 0;
+          if (!state.exiting && state.mode === "pro") {
+            connectProStream();
+            fetchProHelloFallback();
+          }
+        }, 1500);
+      }
+    }
   };
   pollProRecording();
 }
 
 function disconnectProStream() {
-  if (state.proSSE) { state.proSSE.close(); state.proSSE = null; }
+  clearProRecTimer();
+  if (state.proSSERetryTimer) {
+    clearTimeout(state.proSSERetryTimer);
+    state.proSSERetryTimer = 0;
+  }
+  if (state.proSSE) {
+    state.proSSE.close();
+    state.proSSE = null;
+  }
 }
 
 async function pollProRecording() {
-  if (state.mode !== "pro") return;
+  clearProRecTimer();
+  if (state.exiting || state.mode !== "pro") return;
   try {
     const r = await api("/api/pro/recording");
+    if (state.exiting || state.mode !== "pro") return;
     state.proRec = r;
-    $("pro-rec-btn").disabled = false;
-    $("pro-rec-btn").textContent = r.recording ? `停止录制 (${r.packets}包)` : "开始录制";
-    $("pro-rec-dl").hidden = !(!r.recording && r.downloadUrl);
-  } catch { /* ignore */ }
-  setTimeout(pollProRecording, 1500);
+    const exporting = !!r.exporting;
+    $("pro-rec-btn").disabled = exporting;
+    $("pro-rec-btn").textContent = exporting
+      ? "导出中..."
+      : r.recording
+        ? `停止录制 (${r.packets}包)`
+        : "开始录制";
+    $("pro-rec-dl").hidden = !(!r.recording && !exporting && r.downloadUrl);
+  } catch {
+    if (state.exiting || state.mode !== "pro") return;
+  }
+  if (!state.exiting && state.mode === "pro") {
+    state.proRecTimer = setTimeout(pollProRecording, 1500);
+  }
 }
 
 $("pro-dev-refresh").onclick = async () => {
@@ -830,25 +955,86 @@ $("pro-dev-stop").onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 
-$("pro-rec-btn").onclick = () => {
+$("pro-rec-btn").onclick = async () => {
+  if (state.proRec?.exporting) return;
   const action = state.proRec?.recording ? "stop" : "start";
-  api("/api/pro/recording", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) })
-    .then(() => toast(action === "start" ? "已开始 V4 诊断录制" : "正在打包导出诊断包..."))
-    .catch((e) => toast(e.message, true));
+  $("pro-rec-btn").disabled = true;
+  try {
+    await api("/api/pro/recording", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+    toast(action === "start" ? "已开始 V4 诊断录制" : "正在打包导出诊断包...");
+  } catch (e) {
+    toast(e.message, true);
+  }
+  pollProRecording();
 };
 
 // ==================== LIVE SSE STREAM & VISUALIZERS ====================
 
 let lastCarOrdinalSeen = 0;
+let mainSseOffline = false;
 
 function connectMainSSE() {
+  if (state.mainSSE) {
+    state.mainSSE.close();
+    state.mainSSE = null;
+  }
+  if (state.exiting) return;
   const es = new EventSource("/api/stream");
+  state.mainSSE = es;
+  es.onopen = () => {
+    if (mainSseOffline && !state.exiting) {
+      mainSseOffline = false;
+      loadInitialState();
+    }
+  };
+  es.onerror = () => {
+    if (state.exiting) {
+      es.close();
+      if (state.mainSSE === es) state.mainSSE = null;
+      return;
+    }
+    mainSseOffline = true;
+    setPill("pill-game", "bad", "服务已断开");
+    setPill("pill-hid", "bad", "连接中断");
+  };
   es.onmessage = (e) => {
+    if (state.exiting) return;
     let m; try { m = JSON.parse(e.data); } catch { return; }
     state.latestSnap = m.snap;
 
+    if (m.mode && m.mode !== state.mode && !state.switchingMode) {
+      state.mode = m.mode;
+      renderModeUI();
+      if (m.mode !== "pro") {
+        disconnectProStream();
+        state.proHello = null;
+      }
+      loadInitialState();
+    }
+
+    if (m.proStatus) {
+      const prevRunning = state.proStatus?.running;
+      const prevPreset = state.proStatus?.activePresetId;
+      state.proStatus = m.proStatus;
+      updateProDiagnosticsLink();
+      if (prevPreset !== m.proStatus.activePresetId) {
+        renderProPresets();
+      }
+      if (state.mode === "pro" && prevRunning && !m.proStatus.running) {
+        setPill("pill-hid", "bad", "V4 已停止");
+        if (m.proStatus.lastError) {
+          toast("V4 专业引擎已停止：" + m.proStatus.lastError, true);
+        }
+      }
+    }
+
     if (m.mode === "entertainment") {
-      setPill("pill-hid", m.writing ? (m.writeFailures > 0 ? "warn" : "ok") : "", m.writing ? "Next 输出中" : "反馈关闭");
+      const newWriting = !!m.writing;
+      if (newWriting !== state.writing) {
+        state.writing = newWriting;
+        renderEntDevices();
+      }
+      setPill("pill-hid", newWriting ? (m.writeFailures > 0 ? "warn" : "ok") : "", newWriting ? "Next 输出中" : "反馈关闭");
       $("ent-dev-stats").textContent = `已发 ${(m.written || 0).toLocaleString()} 帧${m.writeFailures ? ` · 异常 ${m.writeFailures}` : ""}`;
     }
     const gameOk = !!m.snap?.gameConnected;
@@ -858,8 +1044,14 @@ function connectMainSSE() {
       pushRing(m.snap.gripL, m.snap.gripR, m.snap.trig);
       updateDashboard(m.snap);
       if (m.snap.car) {
+        state.activeCar = m.snap.car;
         const changed = m.snap.car.carOrdinal !== lastCarOrdinalSeen;
-        if (changed) lastCarOrdinalSeen = m.snap.car.carOrdinal;
+        if (changed) {
+          lastCarOrdinalSeen = m.snap.car.carOrdinal;
+          if (m.snap.car.carOrdinal > 0) {
+            refreshGarageList();
+          }
+        }
         updateCarCard(m.snap.car, changed);
       }
     }
@@ -927,7 +1119,7 @@ function updateDashboard(s) {
   }
 
   const evs = s.events || [];
-  const activeSet = new Set(evs.map((x) => x.id));
+  const activeSet = new Set(evs.map((x) => (x.id === "smashable" ? "collisionWall" : x.id)));
   $("live-event-chips").innerHTML = evs.length
     ? evs.map((x) => `<span class="chip cat-${esc(x.category)}">${esc(x.label)} ${Math.round((x.intensity || 0) * 100)}%</span>`).join("")
     : `<span class="chip muted">当前平稳 / 点击下方对比试震体验不同手感</span>`;
@@ -947,13 +1139,17 @@ function updateDashboard(s) {
 }
 
 function drawVisuals() {
+  if (state.exiting) {
+    state.rafId = 0;
+    return;
+  }
   if (!document.hidden && state.mode === "entertainment") {
     drawScope("scope-gl", state.ringGL, "#38bdf8");
     drawScope("scope-gr", state.ringGR, "#a78bfa");
     drawScope("scope-t", state.ringT, "#f59e0b");
     drawGCircleAndImpact(state.latestSnap?.packet);
   }
-  requestAnimationFrame(drawVisuals);
+  state.rafId = requestAnimationFrame(drawVisuals);
 }
 
 function drawScope(id, ring, color) {
@@ -961,7 +1157,7 @@ function drawScope(id, ring, color) {
   if (!cv) return;
   const w = cv.clientWidth;
   if (!w) return;
-  const h = 62, dpr = window.devicePixelRatio || 1;
+  const h = 58, dpr = window.devicePixelRatio || 1;
   if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
     cv.width = Math.round(w * dpr);
     cv.height = Math.round(h * dpr);
@@ -990,7 +1186,7 @@ function drawScope(id, ring, color) {
 
 function drawGCircleAndImpact(p) {
   const cv = $("g-canvas");
-  if (!cv) return;
+  if (!cv || !cv.clientWidth) return;
   const g = cv.getContext("2d"), W = cv.width, cx = W / 2, R = W / 2 - 12;
   g.clearRect(0, 0, W, W);
 
@@ -1045,6 +1241,8 @@ const ledLampEls = (() => {
   });
 })();
 
+let ledSaveSeq = 0;
+
 function syncLightingControls(cfg) {
   if (!cfg || !$("led-enabled")) return;
   $("led-enabled").checked = !!cfg.enabled;
@@ -1060,12 +1258,20 @@ function syncLightingControls(cfg) {
   const brPct = Math.round((cfg.brightnessScale ?? 1.0) * 100);
   $("led-bright").value = String(brPct);
   $("led-bright-v").textContent = brPct + "%";
-  const shPct = cfg.shiftRatioOverride > 0 ? Math.round(cfg.shiftRatioOverride * 100) : 0;
-  $("led-shift").value = String(shPct);
-  $("led-shift-v").textContent = shPct > 0 ? shPct + "%" : "自动";
+  const isAuto = !(cfg.shiftRatioOverride >= 0.72);
+  $("led-shift-auto").checked = isAuto;
+  $("led-shift").disabled = isAuto;
+  if (!isAuto) {
+    const shPct = Math.min(98, Math.max(72, Math.round(cfg.shiftRatioOverride * 100)));
+    $("led-shift").value = String(shPct);
+    $("led-shift-v").textContent = shPct + "%";
+  } else {
+    $("led-shift-v").textContent = "自动";
+  }
 }
 
 function collectLightingConfig() {
+  const isAuto = $("led-shift-auto").checked;
   const shVal = Number($("led-shift").value);
   return {
     enabled: $("led-enabled").checked,
@@ -1077,13 +1283,16 @@ function collectLightingConfig() {
     vibrationLink: $("led-opt-vib").checked,
     hardBrakeThreshold: Number($("led-brk-th").value) / 100,
     brightnessScale: Number($("led-bright").value) / 100,
-    shiftRatioOverride: shVal >= 72 ? shVal / 100 : 0,
+    shiftRatioOverride: isAuto ? 0 : Math.min(98, Math.max(72, shVal)) / 100,
   };
 }
 
 function scheduleSaveLightingConfig(immediate = false) {
   clearTimeout(state.ledSaveTimer);
+  state.ledSaveTimer = 0;
+  const seq = ++ledSaveSeq;
   const run = async () => {
+    state.ledSaveTimer = 0;
     try {
       const cfg = collectLightingConfig();
       const r = await api("/api/lighting/config", {
@@ -1093,14 +1302,18 @@ function scheduleSaveLightingConfig(immediate = false) {
       });
       if (r.lighting) {
         state.lighting = r.lighting;
+        if (seq === ledSaveSeq && r.lighting.config) {
+          syncLightingControls(r.lighting.config);
+        }
         updateLightingUI(r.lighting);
       }
     } catch (e) {
       toast("保存灯效设置失败：" + e.message, true);
     }
   };
-  if (immediate) run();
-  else state.ledSaveTimer = setTimeout(run, 120);
+  if (immediate) return run();
+  state.ledSaveTimer = setTimeout(run, 120);
+  return Promise.resolve();
 }
 
 function updateLightingUI(ls) {
@@ -1151,14 +1364,25 @@ if ($("led-cfg-toggle")) {
     $("led-bright-v").textContent = $("led-bright").value + "%";
     scheduleSaveLightingConfig(false);
   };
+  $("led-shift-auto").onchange = () => {
+    const isAuto = $("led-shift-auto").checked;
+    $("led-shift").disabled = isAuto;
+    $("led-shift-v").textContent = isAuto ? "自动" : $("led-shift").value + "%";
+    scheduleSaveLightingConfig(true);
+  };
   $("led-shift").oninput = () => {
-    const v = Number($("led-shift").value);
-    $("led-shift-v").textContent = v >= 72 ? v + "%" : "自动";
+    $("led-shift-auto").checked = false;
+    $("led-shift").disabled = false;
+    $("led-shift-v").textContent = $("led-shift").value + "%";
     scheduleSaveLightingConfig(false);
   };
   $("led-restore-btn").onclick = async () => {
     try {
-      await api("/api/lighting/restore", { method: "POST" });
+      const r = await api("/api/lighting/restore", { method: "POST" });
+      if (r.lighting) {
+        state.lighting = r.lighting;
+        updateLightingUI(r.lighting);
+      }
       toast("已将手柄灯带恢复为连接前的原始灯效");
     } catch (e) { toast("恢复原灯效失败：" + e.message, true); }
   };
@@ -1186,11 +1410,26 @@ if ($("btn-safe-exit")) {
     toast("正在恢复手柄原灯效并安全关闭引擎...");
     try {
       await api("/api/shutdown", { method: "POST" });
+      state.exiting = true;
+      clearTimeout(state.saveTimer);
+      state.saveTimer = 0;
+      clearTimeout(state.ledSaveTimer);
+      state.ledSaveTimer = 0;
+      disconnectProStream();
+      if (state.mainSSE) {
+        state.mainSSE.close();
+        state.mainSSE = null;
+      }
+      if (state.rafId) {
+        cancelAnimationFrame(state.rafId);
+        state.rafId = 0;
+      }
       $("alert-bar").hidden = false;
       $("alert-bar").textContent = "✓ ForzaNext 已恢复手柄原灯效并安全退出，您现在可以关闭此浏览器标签页。";
       setPill("pill-hid", "", "已退出");
       setPill("pill-led", "", "原灯效已恢复");
       setPill("pill-udp", "", "已关闭");
+      setPill("pill-game", "", "已退出");
       toast("已安全退出，可关闭页面");
     } catch (e) {
       toast("安全退出请求失败：" + e.message, true);
@@ -1202,4 +1441,4 @@ if ($("btn-safe-exit")) {
 
 loadInitialState();
 connectMainSSE();
-requestAnimationFrame(drawVisuals);
+state.rafId = requestAnimationFrame(drawVisuals);

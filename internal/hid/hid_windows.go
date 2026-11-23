@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -29,6 +30,11 @@ var (
 	procSetupDiEnumDevIfaces   = modSetupAPI.NewProc("SetupDiEnumDeviceInterfaces")
 	procSetupDiGetDevIfaceDetW = modSetupAPI.NewProc("SetupDiGetDeviceInterfaceDetailW")
 	procSetupDiDestroyDevInfo  = modSetupAPI.NewProc("SetupDiDestroyDeviceInfoList")
+	procCreateEventW           = modKernel32.NewProc("CreateEventW")
+	procResetEvent             = modKernel32.NewProc("ResetEvent")
+	procWaitForSingleObject    = modKernel32.NewProc("WaitForSingleObject")
+	procGetOverlappedResult    = modKernel32.NewProc("GetOverlappedResult")
+	procCancelIoEx             = modKernel32.NewProc("CancelIoEx")
 	procTimeBeginPeriod        = modWinMM.NewProc("timeBeginPeriod")
 	procTimeEndPeriod          = modWinMM.NewProc("timeEndPeriod")
 )
@@ -37,6 +43,10 @@ const (
 	digcfPresent         = 0x00000002
 	digcfDeviceInterface = 0x00000010
 	reportLength33       = 33
+
+	hidWriteTimeoutMs   = 40
+	maxConsecWriteFails = 5
+	rightTrigHoldOff    = 500 * time.Millisecond
 
 	// Known primary X-Haptics / Flydigi 86-series controller VID/PID/UsagePage.
 	PreferredVID       uint16 = 0x37D7
@@ -321,8 +331,12 @@ func BuildCtrl0x53(payload ...byte) [33]byte {
 	f[1] = 0x5A
 	f[2] = 0xA5
 	f[3] = 0x53
-	f[4] = byte(len(payload) + 2)
-	for i := 0; i < len(payload) && 5+i <= 31; i++ {
+	n := len(payload)
+	if n > 27 {
+		n = 27
+	}
+	f[4] = byte(n + 2)
+	for i := 0; i < n; i++ {
 		f[5+i] = payload[i]
 	}
 	f[32] = Checksum(&f)
@@ -363,26 +377,43 @@ func FrameHex(f [33]byte) string {
 
 // Writer manages exclusive write access to one 33-byte HID controller.
 type Writer struct {
-	mu              sync.Mutex
-	handle          syscall.Handle
-	activePath      string
-	activeDev       *DeviceInfo
-	written         uint64
-	failures        uint64
-	lastErr         string
-	rightTrigEnable bool
-	initialized     bool
+	mu                sync.Mutex
+	handle            syscall.Handle
+	writeEv           syscall.Handle
+	activePath        string
+	activeDev         *DeviceInfo
+	written           uint64
+	failures          uint64
+	consecFailures    int
+	lastErr           string
+	rightTrigEnable   bool
+	rightTrigOffSince time.Time
+	initialized       bool
+
+	// Optional hooks for unit tests (nil in production).
+	nowFn     func() time.Time
+	writeHook func(frame [33]byte) error
 }
 
 func NewWriter() *Writer {
-	return &Writer{handle: syscall.InvalidHandle}
+	return &Writer{
+		handle:  syscall.InvalidHandle,
+		writeEv: syscall.InvalidHandle,
+	}
+}
+
+func (w *Writer) now() time.Time {
+	if w.nowFn != nil {
+		return w.nowFn()
+	}
+	return time.Now()
 }
 
 func (w *Writer) Open(dev DeviceInfo) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	w.closeLocked()
+	w.closeLocked(true)
 
 	pUTF16, err := syscall.UTF16PtrFromString(dev.Path)
 	if err != nil {
@@ -395,7 +426,7 @@ func (w *Writer) Open(dev DeviceInfo) error {
 		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE,
 		nil,
 		syscall.OPEN_EXISTING,
-		0,
+		syscall.FILE_FLAG_OVERLAPPED,
 		0,
 	)
 	if err != nil || h == syscall.InvalidHandle {
@@ -405,13 +436,23 @@ func (w *Writer) Open(dev DeviceInfo) error {
 		w.lastErr = fmt.Sprintf("无法打开手柄（可能被 Flydigi Space/Engine 占用）: %v", err)
 		return errors.New(w.lastErr)
 	}
+	ev, _, evErr := procCreateEventW.Call(0, 1, 0, 0)
+	if ev == 0 {
+		_ = syscall.CloseHandle(h)
+		w.lastErr = fmt.Sprintf("创建 HID 重叠事件句柄失败: %v", evErr)
+		return errors.New(w.lastErr)
+	}
+
 	w.handle = h
+	w.writeEv = syscall.Handle(ev)
 	w.activePath = dev.Path
 	dCopy := dev
 	dCopy.Writing = true
 	w.activeDev = &dCopy
 	w.lastErr = ""
+	w.consecFailures = 0
 	w.rightTrigEnable = false
+	w.rightTrigOffSince = time.Time{}
 	w.initialized = false
 
 	// Send verified v4 3-packet 0x53 initialization sequence.
@@ -423,7 +464,8 @@ func (w *Writer) Open(dev DeviceInfo) error {
 	}
 	for _, fr := range initFrames {
 		if err := w.writeLocked(fr); err != nil {
-			w.closeLocked()
+			// Do not attempt shutdown writes on a broken handle; preserve original error.
+			w.closeLocked(false)
 			return err
 		}
 	}
@@ -434,28 +476,40 @@ func (w *Writer) Open(dev DeviceInfo) error {
 func (w *Writer) Close() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.closeLocked()
+	w.closeLocked(true)
 }
 
-func (w *Writer) closeLocked() {
+func (w *Writer) closeLocked(sendShutdown bool) {
 	if w.handle != syscall.InvalidHandle && w.handle != 0 {
-		// Send neutral silence + disable triggers before releasing handle.
-		_ = w.writeLocked(BuildNeutral0x57())
-		_ = w.writeLocked(BuildCtrl0x53(0x01, 0x01, 0x03, 0x06, 0x00))
-		_ = w.writeLocked(BuildCtrl0x53(0x01, 0x00, 0x03, 0x06, 0x00))
+		if sendShutdown && w.initialized {
+			// Send neutral silence + disable triggers before releasing handle.
+			_ = w.writeLocked(BuildNeutral0x57())
+			_ = w.writeLocked(BuildCtrl0x53(0x01, 0x01, 0x03, 0x06, 0x00))
+			_ = w.writeLocked(BuildCtrl0x53(0x01, 0x00, 0x03, 0x06, 0x00))
+		}
 		_ = syscall.CloseHandle(w.handle)
 	}
+	if w.writeEv != syscall.InvalidHandle && w.writeEv != 0 {
+		_ = syscall.CloseHandle(w.writeEv)
+	}
 	w.handle = syscall.InvalidHandle
+	w.writeEv = syscall.InvalidHandle
 	w.activePath = ""
 	w.activeDev = nil
 	w.rightTrigEnable = false
+	w.rightTrigOffSince = time.Time{}
+	w.consecFailures = 0
 	w.initialized = false
 }
 
 func (w *Writer) IsOpen() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.handle != syscall.InvalidHandle && w.handle != 0
+	return w.isOpenLocked()
+}
+
+func (w *Writer) isOpenLocked() bool {
+	return (w.handle != syscall.InvalidHandle && w.handle != 0) || (w.writeHook != nil && w.initialized)
 }
 
 func (w *Writer) ActivePath() string {
@@ -472,42 +526,117 @@ func (w *Writer) Stats() (written, failures uint64, lastErr string, open bool, d
 		d := *w.activeDev
 		cp = &d
 	}
-	return w.written, w.failures, w.lastErr, w.handle != syscall.InvalidHandle && w.handle != 0, cp
+	return w.written, w.failures, w.lastErr, w.isOpenLocked(), cp
 }
 
-// SyncRightTrigger sends 0x53 right trigger enable/disable only when state changes.
+// SyncRightTrigger sends 0x53 right trigger enable/disable with a 500 ms hold-off before
+// disengaging RT so brief trigger-route gaps never chatter the RT actuator clutch.
 func (w *Writer) SyncRightTrigger(enable bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.handle == syscall.InvalidHandle || w.handle == 0 || !w.initialized {
+	if !w.isOpenLocked() || !w.initialized {
 		return
 	}
-	if enable == w.rightTrigEnable {
-		return
-	}
-	val := byte(0x00)
 	if enable {
-		val = 0x40
+		w.rightTrigOffSince = time.Time{}
+		if w.rightTrigEnable {
+			return
+		}
+		if err := w.writeLocked(BuildCtrl0x53(0x01, 0x01, 0x03, 0x06, 0x40)); err == nil {
+			w.rightTrigEnable = true
+		} else if w.consecFailures >= maxConsecWriteFails {
+			w.closeLocked(false)
+		}
+		return
 	}
-	if err := w.writeLocked(BuildCtrl0x53(0x01, 0x01, 0x03, 0x06, val)); err == nil {
-		w.rightTrigEnable = enable
+
+	if !w.rightTrigEnable {
+		w.rightTrigOffSince = time.Time{}
+		return
+	}
+	now := w.now()
+	if w.rightTrigOffSince.IsZero() {
+		w.rightTrigOffSince = now
+		return
+	}
+	if now.Sub(w.rightTrigOffSince) < rightTrigHoldOff {
+		return
+	}
+	if err := w.writeLocked(BuildCtrl0x53(0x01, 0x01, 0x03, 0x06, 0x00)); err == nil {
+		w.rightTrigEnable = false
+		w.rightTrigOffSince = time.Time{}
+	} else if w.consecFailures >= maxConsecWriteFails {
+		w.closeLocked(false)
 	}
 }
 
 func (w *Writer) WriteReport(frame [33]byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.handle == syscall.InvalidHandle || w.handle == 0 {
+	if !w.isOpenLocked() {
 		return nil
 	}
-	return w.writeLocked(frame)
+	err := w.writeLocked(frame)
+	if err != nil && w.consecFailures >= maxConsecWriteFails {
+		w.closeLocked(false)
+	}
+	return err
 }
 
 func (w *Writer) writeLocked(frame [33]byte) error {
+	if w.writeHook != nil {
+		if err := w.writeHook(frame); err != nil {
+			w.failures++
+			w.consecFailures++
+			w.lastErr = err.Error()
+			return err
+		}
+		w.written++
+		w.consecFailures = 0
+		return nil
+	}
+
+	_, _, _ = procResetEvent.Call(uintptr(w.writeEv))
+	ov := syscall.Overlapped{HEvent: w.writeEv}
 	var n uint32
-	err := syscall.WriteFile(w.handle, frame[:], &n, nil)
+	err := syscall.WriteFile(w.handle, frame[:], &n, &ov)
+	if err == syscall.ERROR_IO_PENDING {
+		waitRes, _, _ := procWaitForSingleObject.Call(uintptr(w.writeEv), hidWriteTimeoutMs)
+		if waitRes == 0 { // WAIT_OBJECT_0
+			ok, _, ovErr := procGetOverlappedResult.Call(
+				uintptr(w.handle),
+				uintptr(unsafe.Pointer(&ov)),
+				uintptr(unsafe.Pointer(&n)),
+				1, // bWait = TRUE
+			)
+			if ok != 0 {
+				err = nil
+			} else if ovErr != nil && ovErr != syscall.Errno(0) {
+				err = ovErr
+			} else {
+				err = errors.New("HID GetOverlappedResult failed")
+			}
+		} else {
+			_, _, _ = procCancelIoEx.Call(uintptr(w.handle), uintptr(unsafe.Pointer(&ov)))
+			var cn uint32
+			ok, _, _ := procGetOverlappedResult.Call(
+				uintptr(w.handle),
+				uintptr(unsafe.Pointer(&ov)),
+				uintptr(unsafe.Pointer(&cn)),
+				1, // bWait = TRUE: mandatory wait so kernel releases ov & frame
+			)
+			if ok != 0 && cn == reportLength33 {
+				n = cn
+				err = nil
+			} else {
+				err = fmt.Errorf("HID WriteFile timeout (%dms)", hidWriteTimeoutMs)
+			}
+		}
+	}
+
 	if err != nil || n != reportLength33 {
 		w.failures++
+		w.consecFailures++
 		if err != nil {
 			w.lastErr = err.Error()
 		} else {
@@ -516,5 +645,6 @@ func (w *Writer) writeLocked(frame [33]byte) error {
 		return errors.New(w.lastErr)
 	}
 	w.written++
+	w.consecFailures = 0
 	return nil
 }

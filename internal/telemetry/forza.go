@@ -121,8 +121,9 @@ func Parse(b []byte) (Packet, error) {
 		p.Format = FormatHorizon324
 		off = 12
 	case len(b) > 324:
+		// Forza Motorsport (2023) 331-byte packets have NO 12-byte Horizon gap at offset 232.
 		p.Format = FormatExtended
-		off = 12
+		off = 0
 	default:
 		p.Format = FormatMotorsport323
 		off = 0
@@ -212,12 +213,18 @@ func Parse(b []byte) (Packet, error) {
 		p.Steer = int8(b[308+off])
 	}
 
-	if !finite32(p.CurrentRpm) || !finite32(p.EngineMaxRpm) || !finite32(p.SpeedMs) ||
-		!finite32(p.AccelX) || !finite32(p.AccelY) || !finite32(p.AccelZ) {
+	if !finite32(p.CurrentRpm) || !finite32(p.EngineMaxRpm) || !finite32(p.EngineIdleRpm) || !finite32(p.RpmRatio) ||
+		!finite32(p.SpeedMs) || !finite32(p.SpeedKmh) ||
+		!finite32(p.AccelX) || !finite32(p.AccelY) || !finite32(p.AccelZ) ||
+		!finite32(p.VelX) || !finite32(p.VelY) || !finite32(p.VelZ) ||
+		!finite32(p.AngVelX) || !finite32(p.AngVelY) || !finite32(p.AngVelZ) ||
+		!finite32(p.PowerW) || !finite32(p.TorqueNm) || !finite32(p.BoostPsi) ||
+		!finite32(p.SmashableVelDiff) || !finite32(p.SmashableMass) {
 		return Packet{}, ErrNonFinite
 	}
 	for i := 0; i < 4; i++ {
 		if !finite32(p.NormSusp[i]) || !finite32(p.SuspTravelM[i]) || !finite32(p.CombinedSlip[i]) ||
+			!finite32(p.SlipRatio[i]) || !finite32(p.WheelRotSpeed[i]) || !finite32(p.SlipAngle[i]) ||
 			!finite32(p.SurfaceRumble[i]) || !finite32(p.PuddleDepth[i]) {
 			return Packet{}, ErrNonFinite
 		}

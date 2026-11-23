@@ -96,7 +96,7 @@ func ParseResponse(bytes []byte, cmd byte) []byte {
 		copy(res, bytes[offset+3:end-1])
 		return res
 	}
-	for candidateEnd := offset + 5; candidateEnd <= len(bytes); candidateEnd++ {
+	for candidateEnd := len(bytes); candidateEnd >= offset+5; candidateEnd-- {
 		zeroPadded := true
 		for i := candidateEnd; i < len(bytes); i++ {
 			if bytes[i] != 0 {

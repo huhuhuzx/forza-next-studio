@@ -27,7 +27,11 @@ func setConsoleTitle(title string) {
 // so APEX 6 LED lighting is restored and V4 child processes are terminated before exit!
 func installConsoleCloseHandler(onClose func()) {
 	cb := syscall.NewCallback(func(ctrlType uint32) uintptr {
-		// 0=CTRL_C, 1=CTRL_BREAK, 2=CTRL_CLOSE, 5=CTRL_LOGOFF, 6=CTRL_SHUTDOWN
+		// 0=CTRL_C, 1=CTRL_BREAK are handled by Go os/signal;
+		// 2=CTRL_CLOSE, 5=CTRL_LOGOFF, 6=CTRL_SHUTDOWN must run cleanup synchronously before Windows terminates us.
+		if ctrlType < 2 {
+			return 0
+		}
 		onClose()
 		return 1
 	})

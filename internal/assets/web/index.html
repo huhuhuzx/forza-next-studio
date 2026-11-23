@@ -30,7 +30,7 @@
   </div>
 
   <div class="status-pills">
-    <span class="pill" id="pill-udp"><i class="dot"></i>UDP 5300</span>
+    <span class="pill" id="pill-udp"><i class="dot"></i>UDP —</span>
     <span class="pill" id="pill-game"><i class="dot"></i>等待游戏</span>
     <span class="pill" id="pill-hid"><i class="dot"></i>反馈关闭</span>
     <span class="pill" id="pill-led"><i class="dot"></i>灯带待机</span>
@@ -83,15 +83,21 @@
       <div class="led-sliders">
         <div class="ctrl-box">
           <div class="ctrl-head"><span>急刹触发阈值（刹车踏板深度）</span><b class="mono" id="led-brk-th-v">35%</b></div>
-          <input type="range" id="led-brk-th" min="5" max="85" step="5" value="35">
+          <input type="range" id="led-brk-th" min="5" max="85" step="1" value="35">
         </div>
         <div class="ctrl-box">
           <div class="ctrl-head"><span>灯带全局亮度</span><b class="mono" id="led-bright-v">100%</b></div>
-          <input type="range" id="led-bright" min="20" max="100" step="5" value="100">
+          <input type="range" id="led-bright" min="20" max="100" step="1" value="100">
         </div>
         <div class="ctrl-box">
-          <div class="ctrl-head"><span>红线闪烁阈值（0%=跟随车辆自学习红线）</span><b class="mono" id="led-shift-v">自动</b></div>
-          <input type="range" id="led-shift" min="0" max="98" step="2" value="0">
+          <div class="ctrl-head">
+            <span>红线闪烁阈值</span>
+            <span class="led-shift-right">
+              <label class="chk-inline"><input type="checkbox" id="led-shift-auto" checked> 自动红线</label>
+              <b class="mono" id="led-shift-v">自动</b>
+            </span>
+          </div>
+          <input type="range" id="led-shift" min="72" max="98" step="1" value="92" disabled>
         </div>
       </div>
     </div>
@@ -136,7 +142,7 @@
           <div class="rpm-block">
             <div class="rpm-meta">
               <span class="muted">转速 <b class="mono" id="hud-rpm">0</b> / <span class="mono" id="hud-maxrpm">8000</span></span>
-              <span class="muted" id="hud-redline-tag">红线 88%</span>
+              <span class="muted" id="hud-redline-tag">红线 92.5%</span>
             </div>
             <div class="rpm-bar">
               <div class="rpm-fill" id="hud-rpm-fill"></div>
@@ -241,7 +247,7 @@
             </div>
             <div class="bench-row">
               <span class="bench-lbl">引擎盲测：</span>
-              <button class="btn xs" data-eng-test="v8_rwd_muscle">美式V8(低频165%)</button>
+              <button class="btn xs" data-eng-test="v8_rwd_muscle">美式V8(低频135%)</button>
               <button class="btn xs" data-eng-test="v12_na_hypercar">V12丝绸</button>
               <button class="btn xs" data-eng-test="rotary_screamer">万转转子(高频)</button>
               <button class="btn xs" data-eng-test="rwd_drift_jdm">涡轮爆冲</button>
@@ -260,15 +266,15 @@
           <div class="scope-box">
             <div class="scope-row">
               <div class="scope-head"><span class="scope-lbl c-cyan">左握把 GL</span><span class="mono muted" id="rms-gl">RMS 0.0</span></div>
-              <canvas id="scope-gl" height="62"></canvas>
+              <canvas id="scope-gl" height="58"></canvas>
             </div>
             <div class="scope-row">
               <div class="scope-head"><span class="scope-lbl c-violet">右握把 GR</span><span class="mono muted" id="rms-gr">RMS 0.0</span></div>
-              <canvas id="scope-gr" height="62"></canvas>
+              <canvas id="scope-gr" height="58"></canvas>
             </div>
             <div class="scope-row">
               <div class="scope-head"><span class="scope-lbl c-amber" id="scope-trig-lbl">扳机 T</span><span class="mono muted" id="flags-readout">flags 0x84</span></div>
-              <canvas id="scope-t" height="62"></canvas>
+              <canvas id="scope-t" height="58"></canvas>
             </div>
           </div>
           <div class="wire-box">
@@ -340,7 +346,7 @@
           <div class="redline-box">
             <div class="rpm-meta">
               <span>红线在线自学习：<b id="cm-rl-status">等待全油门拉转学习</b></span>
-              <span class="mono" id="cm-rl-val">88%</span>
+              <span class="mono" id="cm-rl-val">92.5%</span>
             </div>
             <div class="rpm-bar"><div class="rpm-fill c-amber" id="cm-rl-bar" style="width:20%"></div></div>
             <div class="muted">全油门拉过 2~3 个挡位后自动锁定峰值功率与真实断油点；换引擎/改凸轮自动重置重学。</div>
@@ -378,8 +384,8 @@
               <input type="range" id="ov-bed" min="30" max="180" value="100">
             </div>
             <div class="slider-item">
-              <div class="sl-head"><span>红线提醒比例</span><b class="mono" id="ov-rl-v">88%</b></div>
-              <input type="range" id="ov-rl" min="80" max="98" value="88">
+              <div class="sl-head"><span>红线提醒比例</span><b class="mono" id="ov-rl-v">92.5%</b></div>
+              <input type="range" id="ov-rl" min="80" max="98.5" step="0.5" value="92.5">
             </div>
             <div class="form-actions">
               <button class="btn primary" id="ov-save">保存为本车专属</button>
@@ -425,7 +431,7 @@
         <button class="btn danger" id="pro-dev-stop" disabled>停止</button>
         <button class="btn" id="pro-rec-btn" disabled>开始录制</button>
         <a class="btn" id="pro-rec-dl" href="/api/pro/recording/download" download hidden>下载诊断包</a>
-        <a class="btn ghost" href="/v4/diagnostics.html" target="_blank">V4 底层监控 ↗</a>
+        <a class="btn ghost" id="pro-diag-link" href="/v4/diagnostics.html" target="_blank">V4 底层监控 ↗</a>
       </div>
     </section>
 

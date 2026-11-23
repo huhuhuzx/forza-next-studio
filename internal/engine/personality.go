@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"forzanext/internal/telemetry"
@@ -60,6 +61,22 @@ type CarPersonality struct {
 	UserOverride bool `json:"userOverride"`
 }
 
+// EffectiveRedlineRatio returns the single-source-of-truth redline ratio shared by
+// the haptic synthesizer and the LED lighting controller.
+func (c CarPersonality) EffectiveRedlineRatio(maxRpm float32) float64 {
+	if c.UserOverride {
+		return clamp(c.RedlineRatio, 0.80, 0.985)
+	}
+	if c.RedlineLearned && c.LearnedLimiterRpm > 0 && maxRpm > 1000 {
+		limRatio := clamp((c.LearnedLimiterRpm*0.982)/float64(maxRpm), 0.865, 0.985)
+		if c.RedlineRatio >= 0.865 {
+			return math.Min(limRatio, clamp(c.RedlineRatio, 0.865, 0.985))
+		}
+		return limRatio
+	}
+	return clamp(c.RedlineRatio, 0.865, 0.985)
+}
+
 type GarageEntry struct {
 	CarOrdinal          int32   `json:"carOrdinal"`
 	CustomName          string  `json:"customName,omitempty"`
@@ -105,28 +122,48 @@ type ArchetypeInfo struct {
 	ShiftCrispness      float64  `json:"shiftCrispness"`
 }
 
-// AllArchetypes returns all 18 full-spectrum dynamic vehicle archetypes with wide engine & suspension contrast.
-func AllArchetypes() []ArchetypeInfo {
-	return []ArchetypeInfo{
+var (
+	archetypeCatalog = []ArchetypeInfo{
 		{ID: "electric_hyper", Category: "新能源电驱", Label: "纯电顶级超跑 / 极速电兽", Tags: []string{"零怠速", "高频丝滑电流", "零换挡"}, Description: "原地完全静谧，加速呈极轻盈丝滑高频电驱声浪（85-148Hz），无换挡顿挫。", EngineFamily: "ev", EngineRoundness: 0.96, EngineBurble: 0.0, EngineBedScale: 0.45, EngineFreqBaseHz: 85, EngineFreqTopHz: 148, SuspensionStiffness: 0.86, ShiftCrispness: 0.0},
 		{ID: "electric_street", Category: "新能源电驱", Label: "纯电街车 / 电动越野", Tags: []string{"极静电驱", "突出路感", "柔韧悬架"}, Description: "极轻盈电机嗡鸣（76-132Hz，振幅仅 36%），最大程度突出路面与悬架。", EngineFamily: "ev", EngineRoundness: 0.94, EngineBurble: 0.0, EngineBedScale: 0.36, EngineFreqBaseHz: 76, EngineFreqTopHz: 132, SuspensionStiffness: 0.40, ShiftCrispness: 0.0},
 		{ID: "rotary_screamer", Category: "特殊引擎", Label: "万转转子 / 高转三缸轻跑", Tags: []string{"高频蜂鸣撕裂", "万转高亢", "干脆换挡"}, Description: "独特转子高频蜂鸣（52-152Hz），振幅密实紧绷，与大排量截然相反。", EngineFamily: "rotary_f1", EngineRoundness: 0.14, EngineBurble: 0.06, EngineBedScale: 1.08, EngineFreqBaseHz: 52, EngineFreqTopHz: 152, SuspensionStiffness: 0.74, ShiftCrispness: 0.88},
-		{ID: "baja_trophy_offroad", Category: "越野与拉力", Label: "Baja 奖杯卡车 / 长行程硬派越野", Tags: []string{"重炮V8轰鸣", "超长避震回弹", "重度砂石"}, Description: "超低频重炮 V8（17-58Hz，振幅 156%），超绵长避震回弹与厚重落地。", EngineFamily: "muscle_v8", EngineRoundness: 0.80, EngineBurble: 0.88, EngineBedScale: 1.56, EngineFreqBaseHz: 17, EngineFreqTopHz: 58, SuspensionStiffness: 0.14, ShiftCrispness: 0.50},
+		{ID: "baja_trophy_offroad", Category: "越野与拉力", Label: "Baja 奖杯卡车 / 长行程硬派越野", Tags: []string{"十字曲轴V8", "长行程避震", "重度砂石"}, Description: "紧致浑厚越野 V8（29-70Hz，振幅 130%），长行程避震与扎实落地。", EngineFamily: "muscle_v8", EngineRoundness: 0.72, EngineBurble: 0.75, EngineBedScale: 1.30, EngineFreqBaseHz: 29, EngineFreqTopHz: 70, SuspensionStiffness: 0.14, ShiftCrispness: 0.50},
 		{ID: "track_x_prototype", Category: "顶级赛道", Label: "X 级原型赛车 / 方程式", Tags: []string{"万转高频嘶吼", "极硬生脆底盘", "序列式重击"}, Description: "高频尖锐赛用引擎（54-156Hz），极硬短行程底盘与闪电般序列式换挡撞击。", EngineFamily: "rotary_f1", EngineRoundness: 0.10, EngineBurble: 0.04, EngineBedScale: 1.15, EngineFreqBaseHz: 54, EngineFreqTopHz: 156, SuspensionStiffness: 0.97, ShiftCrispness: 0.99},
 		{ID: "rally_awd_turbo", Category: "越野与拉力", Label: "WRC / B 组四驱涡轮拉力", Tags: []string{"涡轮起压爆发", "砂石高解析", "韧性长避震"}, Description: "低转轻快、涡轮起压后震感猛然膨胀爆发（25-96Hz），砂石与飞坡解析极高。", EngineFamily: "turbo_punch", EngineRoundness: 0.42, EngineBurble: 0.42, EngineBedScale: 0.96, EngineFreqBaseHz: 25, EngineFreqTopHz: 96, SuspensionStiffness: 0.34, ShiftCrispness: 0.85},
-		{ID: "heavy_pickup_suv", Category: "越野与拉力", Label: "重型越野皮卡 / 大排量 SUV", Tags: []string{"超低频浑厚", "超大振幅", "绵软长避震"}, Description: "16-54Hz 超低频大排量浑厚共鸣（振幅 150%），柔和长行程避震闷响。", EngineFamily: "muscle_v8", EngineRoundness: 0.90, EngineBurble: 0.82, EngineBedScale: 1.50, EngineFreqBaseHz: 16, EngineFreqTopHz: 54, SuspensionStiffness: 0.20, ShiftCrispness: 0.38},
+		{ID: "heavy_pickup_suv", Category: "越野与拉力", Label: "重型越野皮卡 / 大排量 SUV", Tags: []string{"大排量V8", "饱满扭矩", "柔韧长避震"}, Description: "28-68Hz 大排量 V8 机械共鸣（振幅 125%），干脆不拖沓的长行程避震。", EngineFamily: "muscle_v8", EngineRoundness: 0.76, EngineBurble: 0.70, EngineBedScale: 1.25, EngineFreqBaseHz: 28, EngineFreqTopHz: 68, SuspensionStiffness: 0.20, ShiftCrispness: 0.38},
 		{ID: "v12_na_hypercar", Category: "自吸超跑", Label: "V12 高转自吸旗舰超跑", Tags: []string{"圆润丝绸高转", "126Hz华丽拉转", "精准底盘"}, Description: "毫无杂振的丝绸般圆润十二缸高频歌唱（34-126Hz），高转清亮华丽。", EngineFamily: "v12_silk", EngineRoundness: 0.88, EngineBurble: 0.05, EngineBedScale: 0.88, EngineFreqBaseHz: 34, EngineFreqTopHz: 126, SuspensionStiffness: 0.84, ShiftCrispness: 0.90},
 		{ID: "v10_na_exotic", Category: "自吸超跑", Label: "V10 高亢自吸超跑", Tags: []string{"密实高亢", "双离合犀利", "紧致底盘"}, Description: "36-122Hz 密实紧绷十缸声浪震感，中高频爆发力强，双离合干脆利落。", EngineFamily: "flat_gt", EngineRoundness: 0.45, EngineBurble: 0.16, EngineBedScale: 1.04, EngineFreqBaseHz: 36, EngineFreqTopHz: 122, SuspensionStiffness: 0.80, ShiftCrispness: 0.88},
 		{ID: "v8_flatplane_gt", Category: "赛道与GT", Label: "高转平面曲轴 V8 / GT 赛车", Tags: []string{"凌厉高频V8", "生硬赛道悬架", "强刹车解析"}, Description: "区别于美式十字曲轴 V8：频率更高（34-116Hz）、脉冲凌厉紧绷、悬架生硬直给。", EngineFamily: "flat_gt", EngineRoundness: 0.24, EngineBurble: 0.28, EngineBedScale: 1.12, EngineFreqBaseHz: 34, EngineFreqTopHz: 116, SuspensionStiffness: 0.88, ShiftCrispness: 0.92},
-		{ID: "v8_rwd_muscle", Category: "肌肉与漂移", Label: "美式大排量 V8 后驱肌肉车", Tags: []string{"狂暴突突怠速", "17Hz超重低音", "165%澎湃振幅"}, Description: "最狂野的机械重低音！17-58Hz 超低频大振幅（165%）+ 强烈凸轮轴突突脉动。", EngineFamily: "muscle_v8", EngineRoundness: 0.76, EngineBurble: 1.00, EngineBedScale: 1.65, EngineFreqBaseHz: 17, EngineFreqTopHz: 58, SuspensionStiffness: 0.38, ShiftCrispness: 0.68},
+		{ID: "v8_rwd_muscle", Category: "肌肉与漂移", Label: "美式大排量 V8 后驱肌肉车", Tags: []string{"十字曲轴V8", "30Hz紧致低音", "135%饱满振幅"}, Description: "紧致有力的美式大排量十字曲轴 V8（30-72Hz，振幅 135%），拉转浑厚连贯不拖沓。", EngineFamily: "muscle_v8", EngineRoundness: 0.68, EngineBurble: 0.85, EngineBedScale: 1.35, EngineFreqBaseHz: 30, EngineFreqTopHz: 72, SuspensionStiffness: 0.38, ShiftCrispness: 0.68},
 		{ID: "twin_turbo_supercar", Category: "增压超跑", Label: "现代双涡轮增压超跑 / Hypercar", Tags: []string{"涡轮暴涨推背", "紧致底盘", "高转绵密"}, Description: "中段涡轮建压带来强烈震感膨胀（28-108Hz），高速底盘紧绷稳健。", EngineFamily: "turbo_punch", EngineRoundness: 0.56, EngineBurble: 0.24, EngineBedScale: 1.02, EngineFreqBaseHz: 28, EngineFreqTopHz: 108, SuspensionStiffness: 0.78, ShiftCrispness: 0.86},
 		{ID: "rwd_drift_jdm", Category: "肌肉与漂移", Label: "后驱 JDM 涡轮街跑 / 漂移特调", Tags: []string{"中后段涡轮爆冲", "清晰起漂", "手刹强化"}, Description: "低转轻快、起压后暴冲饱满（26-102Hz），后轮滑移表达尤为丰富。", EngineFamily: "turbo_punch", EngineRoundness: 0.46, EngineBurble: 0.36, EngineBedScale: 0.92, EngineFreqBaseHz: 26, EngineFreqTopHz: 102, SuspensionStiffness: 0.60, ShiftCrispness: 0.78},
 		{ID: "rwd_lightweight_roadster", Category: "街跑与钢炮", Label: "轻量化后驱自吸小跑（MX-5/86/S2000）", Tags: []string{"轻盈细腻", "低振幅不扰手", "绝佳路感"}, Description: "轻快通透的小排量高转自吸（32-94Hz，振幅 62%），把空间让给路面与转向。", EngineFamily: "small_na", EngineRoundness: 0.66, EngineBurble: 0.14, EngineBedScale: 0.62, EngineFreqBaseHz: 32, EngineFreqTopHz: 94, SuspensionStiffness: 0.62, ShiftCrispness: 0.64},
 		{ID: "fwd_hot_hatch", Category: "街跑与钢炮", Label: "前驱涡轮性能钢炮（Type R / GTI）", Tags: []string{"涡轮拉扯", "紧凑硬朗", "高转清脆"}, Description: "紧凑清脆的涡轮四缸（29-98Hz，起压爆发），前轮推头与烧胎反馈极为清晰。", EngineFamily: "turbo_punch", EngineRoundness: 0.44, EngineBurble: 0.26, EngineBedScale: 0.84, EngineFreqBaseHz: 29, EngineFreqTopHz: 98, SuspensionStiffness: 0.68, ShiftCrispness: 0.74},
 		{ID: "fwd_classic_economy", Category: "经典与街车", Label: "前驱自吸经典小车 / 复古代步", Tags: []string{"极轻柔温和", "小振幅", "日常舒适"}, Description: "非常轻柔克制的小排量引擎（28-78Hz，振幅 50%），柔和换挡与舒适避震。", EngineFamily: "small_na", EngineRoundness: 0.80, EngineBurble: 0.18, EngineBedScale: 0.50, EngineFreqBaseHz: 28, EngineFreqTopHz: 78, SuspensionStiffness: 0.34, ShiftCrispness: 0.40},
-		{ID: "vintage_classic_cruiser", Category: "经典与街车", Label: "经典老爷车 / 复古巡航 GT", Tags: []string{"老机械低频韵味", "松软长避震", "舒缓换挡"}, Description: "21-70Hz 低频老机械呼吸脉动（振幅 115%）搭配松软绵长的经典减震晃动。", EngineFamily: "muscle_v8", EngineRoundness: 0.86, EngineBurble: 0.68, EngineBedScale: 1.15, EngineFreqBaseHz: 21, EngineFreqTopHz: 70, SuspensionStiffness: 0.24, ShiftCrispness: 0.42},
+		{ID: "vintage_classic_cruiser", Category: "经典与街车", Label: "经典老爷车 / 复古巡航 GT", Tags: []string{"老机械共鸣", "柔韧避震", "干脆换挡"}, Description: "32-76Hz 经典老机械质感（振幅 122%）搭配舒展有韧性的经典减震。", EngineFamily: "muscle_v8", EngineRoundness: 0.78, EngineBurble: 0.60, EngineBedScale: 1.22, EngineFreqBaseHz: 32, EngineFreqTopHz: 76, SuspensionStiffness: 0.24, ShiftCrispness: 0.42},
 		{ID: "awd_performance_gt", Category: "全能兜底", Label: "四驱全能性能车 / 通用均衡", Tags: []string{"饱满韧性", "左右独立路感", "全路况均衡"}, Description: "27-94Hz 饱满均衡的四驱性能性格，兼顾引擎机械质感与清晰路感。", EngineFamily: "turbo_punch", EngineRoundness: 0.58, EngineBurble: 0.28, EngineBedScale: 0.95, EngineFreqBaseHz: 27, EngineFreqTopHz: 94, SuspensionStiffness: 0.56, ShiftCrispness: 0.72},
 	}
+	archetypeByID map[string]ArchetypeInfo
+)
+
+func init() {
+	archetypeByID = make(map[string]ArchetypeInfo, len(archetypeCatalog))
+	for _, info := range archetypeCatalog {
+		archetypeByID[info.ID] = info
+	}
+}
+
+// IsValidArchetypeID reports whether id matches one of the built-in vehicle archetypes.
+func IsValidArchetypeID(id string) bool {
+	_, ok := archetypeByID[id]
+	return ok
+}
+
+// AllArchetypes returns all 18 full-spectrum dynamic vehicle archetypes with wide engine & suspension contrast.
+func AllArchetypes() []ArchetypeInfo {
+	out := make([]ArchetypeInfo, len(archetypeCatalog))
+	copy(out, archetypeCatalog)
+	return out
 }
 
 type Profiler struct {
@@ -174,7 +211,7 @@ func defaultPersonality() CarPersonality {
 		Label:               "等待车辆接入（通用均衡）",
 		Tags:                []string{"饱满韧性", "左右独立路感"},
 		EngineFamily:        "turbo_punch",
-		RedlineRatio:        0.88,
+		RedlineRatio:        0.925,
 		EngineRoundness:     0.58,
 		EngineBurble:        0.28,
 		EngineFreqBaseHz:    27,
@@ -184,7 +221,7 @@ func defaultPersonality() CarPersonality {
 		SuspensionStiffness: 0.55,
 		SuspensionReboundMs: 92,
 		ShiftCrispness:      0.72,
-		ShiftDurationMs:     175,
+		ShiftDurationMs:     70,
 		DirtSensitivity:     1.0,
 		LandingSensitivity:  1.0,
 		SlipExpressiveness:  1.0,
@@ -198,7 +235,20 @@ func (p *Profiler) loadGarage() {
 	}
 	var g GarageStore
 	if err := json.Unmarshal(b, &g); err == nil && g.Cars != nil {
+		cleaned := false
+		for k, entry := range g.Cars {
+			if !entry.UserOverride && entry.RedlineRatio > 0 && entry.RedlineRatio < 0.90 {
+				entry.RedlineRatio = 0.925
+				entry.RedlineLearned = false
+				entry.LearnedLimiterRpm = 0
+				g.Cars[k] = entry
+				cleaned = true
+			}
+		}
 		p.garage = g
+		if cleaned {
+			p.saveGarageLocked()
+		}
 	}
 }
 
@@ -208,9 +258,20 @@ func (p *Profiler) saveGarageLocked() {
 	}
 	b, err := json.MarshalIndent(p.garage, "", "  ")
 	if err == nil {
-		_ = os.WriteFile(p.garagePath, b, 0644)
+		_ = atomicWriteFile(p.garagePath, b, 0644)
 	}
 	p.dirtyGarage = false
+}
+
+// FlushGarage persists pending garage updates to disk (safe to call on shutdown).
+func (p *Profiler) FlushGarage() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.dirtyGarage {
+		p.syncCurrentToGarageLocked()
+		p.saveGarageLocked()
+		p.lastPersistTick = 0
+	}
 }
 
 func (p *Profiler) Observe(pkt telemetry.Packet, autoMatch, autoRedline bool) CarPersonality {
@@ -257,11 +318,13 @@ func (p *Profiler) Observe(pkt telemetry.Packet, autoMatch, autoRedline bool) Ca
 		copy(cp, p.suspSamples)
 		sort.Float64s(cp)
 		med := cp[len(cp)/2]
-		if med > p.active.InferredMaxSuspM*0.85 || p.active.InferredMaxSuspM == 0 {
+		if p.active.InferredMaxSuspM < 0.03 {
+			p.active.InferredMaxSuspM = med
+		} else if med >= p.active.InferredMaxSuspM*0.85 {
 			p.active.InferredMaxSuspM = 0.85*p.active.InferredMaxSuspM + 0.15*med
-			if p.active.InferredMaxSuspM < 0.03 {
-				p.active.InferredMaxSuspM = med
-			}
+		} else if len(p.suspSamples) >= 16 {
+			// Allow gradual downward tracking when suspension is stiffened/swapped.
+			p.active.InferredMaxSuspM = 0.92*p.active.InferredMaxSuspM + 0.08*med
 		}
 	}
 
@@ -280,7 +343,7 @@ func (p *Profiler) Observe(pkt telemetry.Packet, autoMatch, autoRedline bool) Ca
 		p.applyArchetypeLocked()
 	}
 
-	if autoRedline && !p.active.IsElectric && pkt.EngineMaxRpm >= 2500 {
+	if autoRedline && !p.active.UserOverride && !p.active.IsElectric && pkt.EngineMaxRpm >= 2500 {
 		p.stepRedlineLearnerLocked(pkt, kw)
 	}
 
@@ -318,13 +381,25 @@ func (p *Profiler) initVehicleLocked(pkt telemetry.Packet, swapDetected bool) {
 		p.active.PeakTorqueNm = saved.PeakTorqueNm
 		p.active.PeakPowerKw = saved.PeakPowerKw
 		p.active.PeakPowerRpm = saved.PeakPowerRpm
-		p.active.LearnedLimiterRpm = saved.LearnedLimiterRpm
-		if saved.RedlineRatio >= 0.80 && saved.RedlineRatio <= 0.985 {
+		if (saved.RedlineRatio >= 0.90 || (saved.UserOverride && saved.RedlineRatio >= 0.80)) && saved.RedlineRatio <= 0.985 {
+			p.active.LearnedLimiterRpm = saved.LearnedLimiterRpm
 			p.active.RedlineRatio = saved.RedlineRatio
 			p.active.RedlineLearned = saved.RedlineLearned
 			if saved.RedlineLearned {
 				p.active.RedlineConfidence = 1.0
+				if saved.LearnedLimiterRpm > 0 {
+					p.learnedLimRpm = saved.LearnedLimiterRpm
+					p.limiterHits = 3
+				}
 			}
+			if saved.PeakPowerRpm > 0 {
+				p.peakPowerRpm = saved.PeakPowerRpm
+			}
+			if saved.PeakPowerKw > 0 {
+				p.peakPowerKw = saved.PeakPowerKw
+			}
+		} else {
+			p.dirtyGarage = true
 		}
 		p.applyArchetypeLocked()
 		if saved.UserOverride {
@@ -389,13 +464,14 @@ func (p *Profiler) stepRedlineLearnerLocked(pkt telemetry.Packet, kw float64) {
 		}
 	}
 
-	if stablePull && ratio >= 0.82 && p.peakPowerKw > 35 {
+	topRatio := math.Max(curRpm, p.prevRpm) / maxRpm
+	if stablePull && pkt.Accel >= 242 && topRatio >= 0.885 && p.peakPowerKw > 35 {
 		powerCliff := p.prevPowerKw > p.peakPowerKw*0.78 && kw < p.peakPowerKw*0.72
-		rpmBounce := p.prevRpm > curRpm+28 && curRpm > maxRpm*0.84
+		rpmBounce := p.prevRpm > curRpm+28 && p.prevRpm >= maxRpm*0.885
 		if powerCliff || rpmBounce {
 			p.rpmBounceCount++
 			cand := math.Max(curRpm, p.prevRpm)
-			if p.rpmBounceCount >= 2 {
+			if p.rpmBounceCount >= 3 {
 				if p.limiterHits == 0 {
 					p.learnedLimRpm = cand
 				} else {
@@ -404,12 +480,12 @@ func (p *Profiler) stepRedlineLearnerLocked(pkt telemetry.Packet, kw float64) {
 				p.limiterHits++
 				p.active.LearnedLimiterRpm = p.learnedLimRpm
 			}
-		} else if p.rpmBounceCount > 0 {
-			p.rpmBounceCount--
 		}
+	} else if ratio < 0.84 || pkt.Accel < 200 {
+		p.rpmBounceCount = 0
 	}
 
-	if p.prevGear >= 1 && pkt.Gear == p.prevGear+1 && pkt.Accel >= 185 && p.prevRpm > maxRpm*0.78 && maxSlip < 1.25 {
+	if p.prevGear >= 1 && pkt.Gear == p.prevGear+1 && pkt.Accel >= 200 && p.prevRpm > maxRpm*0.88 && maxSlip < 1.25 {
 		if p.upshiftN == 0 {
 			p.upshiftEma = p.prevRpm
 		} else {
@@ -418,18 +494,18 @@ func (p *Profiler) stepRedlineLearnerLocked(pkt telemetry.Packet, kw float64) {
 		p.upshiftN++
 	}
 
-	if p.limiterHits >= 1 && p.learnedLimRpm > maxRpm*0.80 {
-		target := p.learnedLimRpm * 0.945
-		if p.peakPowerRpm > 0 && p.peakPowerRpm*1.01 > target {
+	if p.limiterHits >= 1 && p.learnedLimRpm >= maxRpm*0.885 {
+		target := p.learnedLimRpm * 0.982
+		if p.peakPowerRpm > 0 && p.peakPowerRpm*1.01 > target && p.peakPowerRpm*1.01 >= p.learnedLimRpm*0.975 {
 			target = p.peakPowerRpm * 1.01
 		}
-		p.active.RedlineRatio = clamp(target/maxRpm, 0.82, 0.985)
+		p.active.RedlineRatio = clamp(target/maxRpm, 0.90, 0.985)
 		p.active.RedlineLearned = true
 		p.active.RedlineConfidence = math.Min(1.0, 0.65+0.15*float64(p.limiterHits))
 		p.dirtyGarage = true
-	} else if p.upshiftN >= 2 && p.upshiftEma > maxRpm*0.80 {
-		target := p.upshiftEma * 0.955
-		p.active.RedlineRatio = clamp(target/maxRpm, 0.82, 0.97)
+	} else if p.upshiftN >= 3 && p.upshiftEma > maxRpm*0.895 {
+		target := p.upshiftEma * 0.985
+		p.active.RedlineRatio = clamp(target/maxRpm, 0.90, 0.985)
 		p.active.RedlineLearned = true
 		p.active.RedlineConfidence = math.Min(0.85, 0.40+0.15*float64(p.upshiftN))
 		p.dirtyGarage = true
@@ -494,10 +570,9 @@ func (p *Profiler) applyArchetypeLocked() {
 
 	if !a.IsElectric {
 		if a.PeakTorqueNm > 700 {
-			a.EngineBedScale = clamp(a.EngineBedScale*1.12, 0.35, 1.75)
-			a.EngineFreqBaseHz = math.Max(15, a.EngineFreqBaseHz-2.5)
+			a.EngineBedScale = clamp(a.EngineBedScale*1.08, 0.35, 1.38)
 		} else if a.PeakTorqueNm > 50 && a.PeakTorqueNm < 260 {
-			a.EngineBedScale = clamp(a.EngineBedScale*0.86, 0.35, 1.75)
+			a.EngineBedScale = clamp(a.EngineBedScale*0.86, 0.35, 1.38)
 		}
 		if a.MaxRpm >= 9500 && a.EngineFreqTopHz < 120 {
 			a.EngineFreqTopHz += 16
@@ -512,22 +587,19 @@ func (p *Profiler) applyArchetypeLocked() {
 
 func (p *Profiler) applyArchetypeByIDLocked(id string) {
 	a := &p.active
-	for _, info := range AllArchetypes() {
-		if info.ID == id {
-			a.ArchetypeID = info.ID
-			a.Category = info.Category
-			a.Label = info.Label
-			a.Tags = info.Tags
-			a.EngineFamily = info.EngineFamily
-			a.EngineRoundness = info.EngineRoundness
-			a.EngineBurble = info.EngineBurble
-			a.EngineBedScale = info.EngineBedScale
-			a.EngineFreqBaseHz = info.EngineFreqBaseHz
-			a.EngineFreqTopHz = info.EngineFreqTopHz
-			a.SuspensionStiffness = info.SuspensionStiffness
-			a.ShiftCrispness = info.ShiftCrispness
-			break
-		}
+	if info, ok := archetypeByID[id]; ok {
+		a.ArchetypeID = info.ID
+		a.Category = info.Category
+		a.Label = info.Label
+		a.Tags = info.Tags
+		a.EngineFamily = info.EngineFamily
+		a.EngineRoundness = info.EngineRoundness
+		a.EngineBurble = info.EngineBurble
+		a.EngineBedScale = info.EngineBedScale
+		a.EngineFreqBaseHz = info.EngineFreqBaseHz
+		a.EngineFreqTopHz = info.EngineFreqTopHz
+		a.SuspensionStiffness = info.SuspensionStiffness
+		a.ShiftCrispness = info.ShiftCrispness
 	}
 	a.EngineTurboSurge = 0.20
 	if a.EngineFamily == "turbo_punch" {
@@ -539,12 +611,12 @@ func (p *Profiler) applyArchetypeByIDLocked(id string) {
 	a.LandingSensitivity = 1.0
 	a.SlipExpressiveness = 1.0
 	if !a.RedlineLearned {
-		a.RedlineRatio = 0.88
+		a.RedlineRatio = 0.925
 	}
 	switch id {
 	case "rotary_screamer", "track_x_prototype":
 		if !a.RedlineLearned {
-			a.RedlineRatio = 0.92
+			a.RedlineRatio = 0.945
 		}
 	case "baja_trophy_offroad":
 		a.DirtSensitivity = 1.35
@@ -556,7 +628,7 @@ func (p *Profiler) applyArchetypeByIDLocked(id string) {
 		a.DirtSensitivity = 1.20
 	case "v12_na_hypercar", "v10_na_exotic", "v8_flatplane_gt":
 		if !a.RedlineLearned {
-			a.RedlineRatio = 0.90
+			a.RedlineRatio = 0.935
 		}
 	case "v8_rwd_muscle", "rwd_drift_jdm":
 		a.SlipExpressiveness = 1.25
@@ -568,7 +640,7 @@ func (p *Profiler) applyArchetypeByIDLocked(id string) {
 func (p *Profiler) recomputeDerivedFeelLocked() {
 	a := &p.active
 	a.SuspensionReboundMs = 155.0 - 107.0*clamp(a.SuspensionStiffness, 0, 1)
-	a.ShiftDurationMs = 225.0 - 85.0*clamp(a.ShiftCrispness, 0, 1)
+	a.ShiftDurationMs = 95.0 - 35.0*clamp(a.ShiftCrispness, 0, 1)
 }
 
 func (p *Profiler) Active() CarPersonality {
@@ -580,6 +652,9 @@ func (p *Profiler) Active() CarPersonality {
 func (p *Profiler) ApplyDemoArchetype(id string) CarPersonality {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !IsValidArchetypeID(id) {
+		return p.active
+	}
 	p.active.IsElectric = id == "electric_hyper" || id == "electric_street"
 	p.active.IsRotary = id == "rotary_screamer"
 	p.applyArchetypeByIDLocked(id)
@@ -591,15 +666,13 @@ func (p *Profiler) SaveCurrentOverride(customName string, roundness, burble, sti
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.active.UserOverride = true
-	if customName != "" {
-		p.active.CustomName = customName
-	}
-	p.active.EngineRoundness = clamp(roundness, 0, 1)
-	p.active.EngineBurble = clamp(burble, 0, 1)
-	p.active.SuspensionStiffness = clamp(stiffness, 0, 1)
-	p.active.ShiftCrispness = clamp(shiftCrisp, 0, 1)
-	p.active.EngineBedScale = clamp(bedScale, 0.3, 1.8)
-	if redlineRatio >= 0.80 && redlineRatio <= 0.985 {
+	p.active.CustomName = strings.TrimSpace(customName)
+	p.active.EngineRoundness = sanitizeFloat(roundness, p.active.EngineRoundness, 0, 1)
+	p.active.EngineBurble = sanitizeFloat(burble, p.active.EngineBurble, 0, 1)
+	p.active.SuspensionStiffness = sanitizeFloat(stiffness, p.active.SuspensionStiffness, 0, 1)
+	p.active.ShiftCrispness = sanitizeFloat(shiftCrisp, p.active.ShiftCrispness, 0, 1)
+	p.active.EngineBedScale = sanitizeFloat(bedScale, p.active.EngineBedScale, 0.3, 1.8)
+	if !math.IsNaN(redlineRatio) && !math.IsInf(redlineRatio, 0) && redlineRatio >= 0.80 && redlineRatio <= 0.985 {
 		p.active.RedlineRatio = redlineRatio
 		p.active.RedlineLearned = true
 		p.active.RedlineConfidence = 1.0
@@ -616,6 +689,11 @@ func (p *Profiler) ResetCurrentOverride() CarPersonality {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.active.UserOverride = false
+	p.active.CustomName = ""
+	p.active.RedlineLearned = false
+	p.active.LearnedLimiterRpm = 0
+	p.active.RedlineConfidence = 0
+	p.resetRedlineLearnerLocked()
 	p.applyArchetypeLocked()
 	if p.active.CarOrdinal != 0 {
 		p.syncCurrentToGarageLocked()
@@ -669,10 +747,22 @@ func (p *Profiler) DeleteGarageEntry(ordinal int32) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.garage.Cars, strconv.Itoa(int(ordinal)))
+	if p.hasActive && p.active.CarOrdinal == ordinal {
+		p.active.UserOverride = false
+		p.active.CustomName = ""
+		p.active.RedlineLearned = false
+		p.active.LearnedLimiterRpm = 0
+		p.active.RedlineConfidence = 0
+		p.resetRedlineLearnerLocked()
+		p.applyArchetypeLocked()
+	}
 	p.saveGarageLocked()
 }
 
 func clamp(v, lo, hi float64) float64 {
+	if math.IsNaN(v) {
+		return lo
+	}
 	if v < lo {
 		return lo
 	}

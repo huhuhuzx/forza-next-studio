@@ -76,12 +76,21 @@ func main() {
 		return
 	}
 
+	// Bind HTTP listener FIRST before touching high-res timer, UDP, or HID/lighting handles,
+	// so a doomed second instance exits cleanly without interfering with an active instance's 0xFFA0 channel.
+	httpAddr := fmt.Sprintf("127.0.0.1:%d", *httpPort)
+	ln, err := net.Listen("tcp", httpAddr)
+	if err != nil {
+		log.Fatalf("[ERR ] 无法监听工作台端口 %s（可能已有实例运行）: %v", httpAddr, err)
+	}
+
 	setConsoleTitle("ForzaNext Studio v3 · 关闭窗口将自动恢复手柄原灯效并安全退出")
 
 	dataDir := resolveDataDir(*rootFlag)
 	cfgPath := filepath.Join(dataDir, "config", "next_config.json")
 	lightCfgPath := filepath.Join(dataDir, "config", "lighting_config.json")
 	garagePath := filepath.Join(dataDir, "data", "garage.json")
+	lightBackupPath := filepath.Join(dataDir, "data", "lighting_backup.bin")
 	v4Dir := filepath.Join(dataDir, "v4_runtime")
 
 	_ = os.MkdirAll(filepath.Dir(cfgPath), 0755)
@@ -93,6 +102,7 @@ func main() {
 	writer := hid.NewWriter()
 	rt := engine.NewRuntime(cfgPath, garagePath, writer)
 	lights := lighting.NewController(lighting.LoadLightConfig(lightCfgPath))
+	lights.SetBackupPath(lightBackupPath)
 	lights.Start()
 	v4Mgr := v4bridge.NewManager(v4Dir, assets.PresetsFS(), assets.EnsureV4Runtime)
 
@@ -111,20 +121,13 @@ func main() {
 		log.Printf("[UDP ] Listening for Forza telemetry on 0.0.0.0:%d", *udpPort)
 	}
 
-	// Bind HTTP listener synchronously BEFORE opening browser so first load never fails
-	httpAddr := fmt.Sprintf("127.0.0.1:%d", *httpPort)
-	ln, err := net.Listen("tcp", httpAddr)
-	if err != nil {
-		log.Fatalf("[ERR ] 无法监听工作台端口 %s（可能已有实例运行）: %v", httpAddr, err)
-	}
-
 	shutdownReq := make(chan struct{})
 	var reqOnce sync.Once
 	triggerShutdown := func() {
 		reqOnce.Do(func() { close(shutdownReq) })
 	}
 
-	app := server.NewApp(assets.WebFS(), dataDir, writer, rt, v4Mgr, lights, lightCfgPath, udpBindErr, triggerShutdown)
+	app := server.NewApp(assets.WebFS(), dataDir, writer, rt, v4Mgr, lights, lightCfgPath, udpBindErr, *udpPort, shutdownReq, triggerShutdown)
 	rt.Start()
 
 	// UDP ingest & dual-mode router goroutine
@@ -145,7 +148,7 @@ func main() {
 				if pkt, perr := telemetry.Parse(raw); perr == nil {
 					rt.IngestPacket(pkt)
 					car := rt.Profiler().Active()
-					lights.ObservePacket(pkt, car.RedlineRatio, car.IsElectric)
+					lights.ObservePacket(pkt, car.EffectiveRedlineRatio(pkt.EngineMaxRpm), car.IsElectric)
 				}
 			}
 		}()
@@ -177,19 +180,24 @@ func main() {
 	var cleanOnce sync.Once
 	doCleanup := func() {
 		cleanOnce.Do(func() {
+			defer close(shutdownDone)
 			log.Println("[EXIT] 正在恢复手柄原灯效并安全退出...")
-			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-			defer cancel()
-			_ = httpSrv.Shutdown(ctx)
+			// Close shutdownReq first so open SSE streams exit immediately without blocking HTTP shutdown.
+			triggerShutdown()
 			if udpConn != nil {
 				_ = udpConn.Close()
 			}
 			rt.Stop()
+			rt.Profiler().FlushGarage()
 			writer.Close()
 			lights.Shutdown()
 			v4Mgr.Stop()
-			close(shutdownDone)
+			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+			defer cancel()
+			_ = httpSrv.Shutdown(ctx)
 		})
+		// Always block until the single cleanup execution finishes (even on a racing second call).
+		<-shutdownDone
 	}
 
 	// Catch red X button on console window & Windows logoff/shutdown cleanly
@@ -207,5 +215,4 @@ func main() {
 	}
 
 	doCleanup()
-	<-shutdownDone
 }
